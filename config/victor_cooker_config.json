@@ -1,0 +1,107 @@
+{
+  "version": "1.0.0",
+  "robot_id": "victor_cooker_robot",
+  "base_path": "/tmp/victor_ipc",
+  "description": "Configuration for Victor cooker robot IPC pools",
+  "pools": [
+    {
+      "name": "victor_cooker_robot_robot_state",
+      "data_type": "float64",
+      "shape": [50],
+      "max_consumers": 10,
+      "description": "Robot state information including position, orientation, joint angles, and velocities",
+      "metadata": {
+        "update_rate_hz": 10,
+        "priority": "high",
+        "data_format": "victor_robot_state"
+      }
+    },
+    {
+      "name": "victor_cooker_robot_camera_rgb",
+      "data_type": "uint8",
+      "shape": [480, 640, 3],
+      "max_consumers": 5,
+      "description": "RGB camera image from main vision sensor",
+      "metadata": {
+        "update_rate_hz": 5,
+        "encoding": "rgb8",
+        "camera_info": {
+          "focal_length": [525.0, 525.0],
+          "principal_point": [320.0, 240.0],
+          "distortion": [0.0, 0.0, 0.0, 0.0, 0.0]
+        }
+      }
+    },
+    {
+      "name": "victor_cooker_robot_camera_depth",
+      "data_type": "float32",
+      "shape": [480, 640],
+      "max_consumers": 5,
+      "description": "Depth camera image for 3D perception",
+      "metadata": {
+        "update_rate_hz": 5,
+        "encoding": "depth_mm",
+        "min_depth": 0.5,
+        "max_depth": 5.0
+      }
+    },
+    {
+      "name": "victor_cooker_robot_joint_commands",
+      "data_type": "float64",
+      "shape": [20],
+      "max_consumers": 3,
+      "description": "Joint command values for robot arm control",
+      "metadata": {
+        "update_rate_hz": 50,
+        "units": "radians",
+        "joint_names": [
+          "shoulder_pan", "shoulder_lift", "elbow", 
+          "wrist_1", "wrist_2", "wrist_3",
+          "gripper_left", "gripper_right"
+        ]
+      }
+    },
+    {
+      "name": "victor_cooker_robot_sensor_data",
+      "data_type": "float64",
+      "shape": [100],
+      "max_consumers": 10,
+      "description": "General sensor data including temperature, force, IMU",
+      "metadata": {
+        "update_rate_hz": 20,
+        "sensor_mapping": {
+          "0-2": "accelerometer_xyz",
+          "3-5": "gyroscope_xyz",
+          "6-8": "magnetometer_xyz",
+          "9": "temperature_ambient",
+          "10": "temperature_cpu",
+          "11": "humidity",
+          "12": "pressure",
+          "13-18": "force_torque_sensor",
+          "19": "battery_voltage",
+          "20": "battery_current"
+        }
+      }
+    },
+    {
+      "name": "victor_cooker_robot_cooking_state",
+      "data_type": "float64",
+      "shape": [30],
+      "max_consumers": 5,
+      "description": "Cooking-specific state information",
+      "metadata": {
+        "update_rate_hz": 2,
+        "cooking_mapping": {
+          "0": "oven_temperature",
+          "1": "target_temperature",
+          "2": "cooking_time_elapsed",
+          "3": "cooking_time_remaining",
+          "4": "door_open_flag",
+          "5": "cooking_mode",
+          "6-15": "ingredient_levels",
+          "16-25": "tool_positions"
+        }
+      }
+    }
+  ]
+}

@@ -59,7 +59,7 @@ class MetadataCreator:
             history_len=history_len,
             element_size=element_size,
             total_size=total_size,
-            shm_name=f"pool_{name}_{os.getpid()}",
+            shm_name=f"tensoripc_{name}",
             creator_pid=os.getpid()
         )
     
@@ -90,7 +90,7 @@ class MetadataCreator:
             history_len=history_len,
             element_size=element_size,
             total_size=total_size,
-            shm_name=f"pool_{name}_{os.getpid()}",
+            shm_name=f"tensoripc_{name}",
             creator_pid=os.getpid()
         )
     

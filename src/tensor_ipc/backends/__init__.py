@@ -8,8 +8,15 @@ import numpy as np
 from ..utils import get_torch, DependencyError
 
 # Import base classes and types
-from .base_backend import TensorBackend, HistoryPadStrategy
-from .numpy_backend import NumpyBackend
+from .base_backend import (
+    HistoryPadStrategy,
+    TensorConsumerBackend,
+    TensorProducerBackend,
+)
+from .numpy_backend import (
+    NumpyProducerBackend,
+    NumpyConsumerBackend,
+)
 
 # Handle PyTorch imports with availability checking
 torch = get_torch()

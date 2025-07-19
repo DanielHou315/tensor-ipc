@@ -4,40 +4,47 @@ from shared memory pools with optional callback support.
 """
 from __future__ import annotations
 from typing import Optional, Callable, Any
-from .backends import create_backend, TensorBackend, detect_backend_from_data
+from ..metadata import PoolMetadata
+from ..backends import (
+    create_backend,
+    TensorConsumerBackend,
+    detect_backend_from_data
+)
+
+# DDS imports
+from cyclonedds.domain import DomainParticipant
+from .dds import DDSConsumer
 
 class TensorConsumer:
     """A simplified consumer for tensor data streams from shared memory pools."""
 
-    def __init__(self, pool_name: str, 
-                 backend_type: str = "numpy",
-                 shape: Optional[tuple] = None,
-                 dtype: Optional[Any] = None,
-                 history_len: int = 1,
-                 device: str = "cpu",
-                 callback: Optional[Callable[[Any], None]] = None):
+    def __init__(self, 
+                 pool_metadata: PoolMetadata,
+                 dds_participant: DomainParticipant,
+                 keep_last: int = 10,
+                 on_new_data_callback = None):
         """Initialize consumer with user-specified parameters (pool may not exist yet)."""
         self.pool_name = pool_name
         self._cleaned_up = False
         
         # Store user-specified parameters for backend creation
-        self._backend_type = backend_type
-        self._shape = shape or (1,)  # Default shape if not specified
-        self._dtype = dtype or "float64"  # Default dtype if not specified
-        self._history_len = history_len
-        self._device = device
+        self._metadata = pool_metadata
+
+        # DDS consumer for notifications
+        self._dds_consumer = DDSConsumer(
+            dds_participant, 
+            pool_name,
+            type(pool_metadata), 
+            keep_last=keep_last,
+            new_data_callback=self._on_new_data,
+            connection_lost_callback=self._on_connection_lost
+        )
         
         # Backend will be created and handle all connection logic
-        self.backend: TensorBackend = create_backend(
-            backend_type=self._backend_type,
-            pool_name=pool_name,
-            shape=self._shape,
-            dtype=self._dtype,
-            history_len=self._history_len,
-            is_producer=False,
-            device=self._device
+        self.backend: TensorBackend = create_consumer_backend(
+            pool_metadata=pool_metadata,
         )
-
+        
         # Register callback with backend if provided
         if callback:
             self.set_callback(callback)

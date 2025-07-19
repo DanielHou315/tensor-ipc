@@ -1,4 +1,4 @@
-from typing import Optional, Union, Type
+from typing import Optional, Union, Type, Callable
 from time import perf_counter
 from cyclonedds.domain import DomainParticipant
 from cyclonedds.pub import DataWriter
@@ -9,13 +9,12 @@ from cyclonedds.core import Listener
 from cyclonedds.util import duration
 from cyclonedds.qos import Qos, Policy
 
-from metadata import (
+from ..metadata import (
     PoolProgressMessage,
     PoolMetadata,
     TorchCUDAPoolMetadata,
     MetadataCreator
 )
-import time
 
 metadata_qos = Qos(
     Policy.Durability.Transient,
@@ -93,10 +92,14 @@ class DDSConsumer:
             Policy.Durability.TransientLocal,
             Policy.History.KeepLast(keep_last),
         )
-        self._progress_listener = Listener(
-            on_data_available=new_data_callback,
-            on_liveliness_lost=connection_lost_callback
-        )
+
+        callback_kwargs = {}
+        if isinstance(new_data_callback, Callable):
+            callback_kwargs['on_data_available'] = new_data_callback
+        if isinstance(connection_lost_callback, Callable):
+            callback_kwargs['on_liveliness_lost'] = connection_lost_callback
+
+        self._progress_listener = Listener(**callback_kwargs)
         self._progress_topic = Topic(participant, f"polyipc_{topic_name}_progress", PoolProgressMessage)
         self._progress_reader = DataReader(
             participant,
@@ -174,32 +177,3 @@ class DDSConsumer:
     @property
     def metadata(self):
         return self._metadata
-
-if __name__ == "__main__":
-    # Example usage
-    from cyclonedds.domain import DomainParticipant
-    import numpy as np
-    
-    participant = DomainParticipant()
-
-    produce_sample = np.array(np.random.rand(10, 8), dtype=np.float32)
-    producer = DDSProducer(participant, "example_pool", MetadataCreator.from_numpy_sample("example_pool", produce_sample, history_len=5))
-
-    def dummy_print(msg):
-        print(f"Progress update: ", msg)
-    consumer = DDSConsumer(participant, "example_pool", PoolMetadata, callback=dummy_print)
-
-    while True:
-        # Publish progress message
-        for f in range(5):
-            time.sleep(0.1)
-            push_sample = PoolProgressMessage(pool_name="example_pool", latest_frame=f)
-            producer.publish_progress(push_sample)
-
-        progress_msg = consumer.read_latest_progress(max_n=2)
-        print("Read progress message")
-
-        if progress_msg:
-            print(f"Received progress: {progress_msg}")
-            break
-        time.sleep(1)

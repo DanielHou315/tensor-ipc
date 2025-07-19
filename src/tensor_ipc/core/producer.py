@@ -1,61 +1,43 @@
 from __future__ import annotations
 from typing import Any
 import numpy as np
-import atexit
-import weakref
 
-from .registry import TensorPoolRegistry, PoolMetadata
-from .backends import create_backend, TensorBackend
-from .utils import get_torch
+from backends import (
+    create_producer_backend,
+    create_consumer_backend,
+    TensorProducer,
+    TensorConsumer
+)
+from .metadata import PoolMetadata, PoolProgressMessage
+from .dds import DDSProducer
 
-# Get optional dependencies
-torch = get_torch()
-TORCH_AVAILABLE = torch is not None
-
-# Global registry for cleanup on exit
-_active_publishers = weakref.WeakSet()
-
-def _cleanup_all_publishers():
-    """Cleanup all active publishers on program exit."""
-    for publisher in list(_active_publishers):
-        try:
-            publisher.cleanup()
-        except Exception:
-            pass  # Ignore cleanup errors during exit
-
-# Register exit handler
-atexit.register(_cleanup_all_publishers)
-
-class TensorPublisher:
+class TensorProducer:
     """Client for writing tensors to a shared pool with notification support."""
 
-    def __init__(self, metadata: PoolMetadata):
-        self.metadata = metadata
-        self._cleaned_up = False
-        
-        # Create the appropriate backend as producer
-        self.backend: TensorBackend = create_backend(
-            backend_type=metadata.backend_type,
-            pool_name=metadata.name,
-            shape=metadata.shape,
-            dtype=metadata.dtype_str,
-            history_len=metadata.history_len,
-            is_producer=True,
-            device=metadata.device
+    def __init__(self, 
+        pool_metadata: PoolMetadata,
+        dds_participant: Any = None,  # Optional DDS participant for notifications
+    ):
+        self._pool_metadata = pool_metadata
+
+        # # DDS producer for notifications
+        self._dds_producer = DDSProducer(
+            dds_participant, 
+            pool_metadata.name, 
+            pool_metadata
         )
         
-        # Register for cleanup on exit
-        _active_publishers.add(self)
-
-    def __del__(self):
-        """Automatic cleanup on object deletion."""
-        self.cleanup()
+        
+        # Create the appropriate backend as producer
+        self.backend: TensorProducer = create_producer_backend(
+            pool_metadata=pool_metadata,
+        )
 
     @classmethod
     def from_sample(cls,
                     pool_name: str,
                     sample: Any,
-                    history_len: int = 1) -> "TensorPublisher":
+                    history_len: int = 1) -> "Tensorproducer":
         """Create a producer and its underlying pool from a sample tensor."""
         if TensorPoolRegistry.pool_exists(pool_name):
             raise ValueError(f"Pool '{pool_name}' already exists.")
@@ -72,6 +54,23 @@ class TensorPublisher:
 
         # Use the backend's publish method directly
         self.backend.publish(data)
+
+    def write(self, data: Any) -> int:
+        """Write data to the tensor pool and return the current frame index."""
+        # Validate data matches expected shape and type
+        self._validate_input(data)
+
+        # Write data using the backend's write method
+        idx = self.backend.write(data)
+
+        # Publish progress notification
+        message = PoolProgressMessage(
+            pool_name=self._pool_metadata.name,
+            latest_frame=idx
+        )
+        self._dds_producer.publish_progress(message)
+
+        return idx
 
     def _validate_input(self, data: Any) -> None:
         """Validate input data matches pool metadata exactly."""
@@ -103,6 +102,10 @@ class TensorPublisher:
                 device_str = str(getattr(data, 'device', 'cpu'))  # Safe access to device attribute
                 if device_str != self.metadata.device:
                     raise TypeError(f"Incorrect device: expected {self.metadata.device}, got {device_str}")
+
+    def __del__(self):
+        """Automatic cleanup on object deletion."""
+        self.cleanup()
 
     def cleanup(self):
         """Clean up producer resources."""

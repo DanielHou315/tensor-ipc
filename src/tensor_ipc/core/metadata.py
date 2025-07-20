@@ -30,11 +30,33 @@ class PoolMetadata(IdlStruct):
     shm_name: str = ""  # Shared memory identifier
     creator_pid: int = 0
 
+    def __eq__(self, other):
+        if not isinstance(other, PoolMetadata):
+            return NotImplemented
+        return (
+            self.name == other.name and
+            self.shape == other.shape and
+            self.dtype_str == other.dtype_str and
+            self.backend_type == other.backend_type and
+            self.history_len == other.history_len and
+            self.device == other.device and
+            self.element_size == other.element_size and
+            self.total_size == other.total_size and
+            self.shm_name == other.shm_name and
+            self.creator_pid == other.creator_pid
+        )
+
 @dataclass
 class TorchCUDAPoolMetadata(PoolMetadata):
     """Specialized metadata for CUDA tensors."""
     device: str = "cuda"
     cuda_ipc_handle: ByteString = b''  # Handle for CUDA IPC
+
+    def __eq__(self, other):
+        if not isinstance(other, TorchCUDAPoolMetadata):
+            return NotImplemented
+        # We don't care if cuda_ipc handle matches since it's a runtime handle
+        return super().__eq__(other) and self.cuda_ipc_handle == other.cuda_ipc_handle
 
 class MetadataCreator:
     @staticmethod
@@ -63,6 +85,7 @@ class MetadataCreator:
             creator_pid=os.getpid()
         )
     
+    @staticmethod
     def from_torch_sample(name: str, sample_data, history_len: int = 1) -> 'PoolMetadata':
         """Create PoolMetadata from a sample tensor/array."""
         import torch
@@ -71,11 +94,11 @@ class MetadataCreator:
         if not isinstance(sample_data, torch.Tensor):
             raise TypeError(f"Sample data must be a torch tensor, got {type(sample_data)}")
 
-        if sample_data.device != 'cpu':
-            raise ValueError("Sample data must be on CPU for metadata creation.")
+        if str(sample_data.device) != 'cpu':
+            raise ValueError(f"Sample data must be on CPU for metadata creation, detected device: {sample_data.device}")
 
         shape = list(sample_data.shape)
-        dtype_str = str(sample_data.dtype)
+        dtype_str = str(sample_data.dtype).split('.')[-1]  # Get dtype string like 'float32'
         element_size = sample_data.element_size()
 
         # Calculate total size for shared memory
@@ -95,7 +118,7 @@ class MetadataCreator:
         )
     
     @classmethod
-    def from_torch_cudasample(cls,
+    def from_torch_cuda_sample(cls,
         name: str,
         sample_data,
         cuda_ipc_handle: ByteString,
@@ -131,3 +154,27 @@ class MetadataCreator:
             creator_pid=os.getpid(),
             cuda_ipc_handle=cuda_ipc_handle
         )
+    
+    @staticmethod
+    def from_sample(name, data, history_len, backend):
+        if backend == "numpy":
+            return MetadataCreator.from_numpy_sample(
+                name=name,
+                sample_data=data,
+                history_len=history_len
+            )
+        elif backend == "torch":
+            return MetadataCreator.from_torch_sample(
+                name=name,
+                sample_data=data,
+                history_len=history_len
+            )
+        elif backend == "torch_cuda":
+            return MetadataCreator.from_torch_cuda_sample(
+                name=name,
+                sample_data=data,
+                cuda_ipc_handle=b'',
+                history_len=history_len
+            )
+        else:
+            raise ValueError(f"Unsupported backend: {backend}")

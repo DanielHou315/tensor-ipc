@@ -7,138 +7,135 @@ with zero-copy tensor views and device conversion support.
 from __future__ import annotations
 from typing import Optional, Any, Union
 import numpy as np
-
-from .numpy_backend import NumpyBackend
-from .base_backend import HistoryPadStrategy
-from ..utils import get_torch, DependencyError
-
-# Runtime imports - check availability first
-torch_avail = get_torch()
-TORCH_AVAILABLE = torch_avail is not None
-
-if not TORCH_AVAILABLE:
-    raise DependencyError(
-        "PyTorch is not available. Install it with: pip install torch"
-    )
-
-# Import torch at module level
 import torch
-TorchTensor = torch.Tensor
-TorchDtype = torch.dtype
 
-class TorchBackend(NumpyBackend):
+from ..core.metadata import PoolMetadata, TorchCUDAPoolMetadata
+from .base_backend import HistoryPadStrategy
+from .numpy_backend import NumpyProducerBackend, NumpyConsumerBackend
+
+# Type mappings between PyTorch and NumPy
+TORCH_TO_NP_DICT = {
+    torch.float32: np.float32,
+    torch.float64: np.float64,
+    torch.int32:   np.int32,
+    torch.int64:   np.int64,
+    torch.int16:   np.int16,
+    torch.int8:    np.int8,
+    torch.uint8:   np.uint8,
+    torch.bool:    np.bool_,
+}
+
+TORCH_TYPE_MAP = {
+    "float32": torch.float32,
+    "float64": torch.float64,
+    "int32": torch.int32,
+    "int64": torch.int64,
+    "int16": torch.int16,
+    "int8": torch.int8,
+    "uint8": torch.uint8,
+    "bool": torch.bool,
+}
+
+
+class TorchProducerBackend(NumpyProducerBackend):
     """
-    PyTorch backend that layers on top of NumPy backend.
+    PyTorch producer backend that inherits from NumPy backend.
     
     This backend uses NumPy's POSIX shared memory for the underlying storage
     and provides zero-copy tensor views via torch.from_numpy().
-    
-    * Producer/Consumer: Use NumpyBackend for shared memory management
-    * Tensors: Convert to/from CPU numpy arrays for sharing
-    * Device support: Automatically converts tensors to target device
     """
 
-    # Dtype mapping between PyTorch and NumPy
-    _NP_FROM_TORCH = {
-        torch.float32: np.float32,
-        torch.float64: np.float64,
-        torch.int32:   np.int32,
-        torch.int64:   np.int64,
-        torch.int16:   np.int16,
-        torch.int8:    np.int8,
-        torch.uint8:   np.uint8,
-        torch.bool:    np.bool_,
-    }
-    _TORCH_FROM_NP = {v: k for k, v in _NP_FROM_TORCH.items()}
-
     def __init__(self,
-                 pool_name: str,
-                 shape: tuple,
-                 dtype: Any,
-                 history_len: int = 1,
-                 is_producer: bool = False,
-                 history_pad_strategy: HistoryPadStrategy = "zero",
-                 device: str = "cpu"):
-
-        if not TORCH_AVAILABLE:
-            raise RuntimeError("PyTorch is not available")
-
-        # Normalize dtype
-        if isinstance(dtype, str):
-            if dtype.startswith("torch."):
-                dtype = getattr(torch, dtype.split(".")[-1])
-            else:  # numpy style string
-                dtype = self._TORCH_FROM_NP[np.dtype(dtype).type]
-
-        # Store target device for tensor conversion
-        self._target_device = torch.device(device)
-        self._torch_dtype = dtype
+        pool_metadata: Union[PoolMetadata, TorchCUDAPoolMetadata],
+        history_pad_strategy: HistoryPadStrategy = "zero",
+        force: bool = False
+    ):
+        # Store target device and dtype for tensor conversion
+        self._target_device = torch.device(pool_metadata.device if hasattr(pool_metadata, 'device') else 'cpu')
+        self._torch_dtype = TORCH_TYPE_MAP.get(pool_metadata.dtype_str, torch.float32)
         
-        # Convert torch dtype to numpy for underlying storage
-        if dtype in self._NP_FROM_TORCH:
-            np_dtype = self._NP_FROM_TORCH[dtype]
-        else:
-            raise ValueError(f"Unsupported torch dtype: {dtype}")
-
-        # Initialize NumPy backend with CPU storage
+        # Initialize NumPy backend - it handles all the shared memory setup
         super().__init__(
-            pool_name=pool_name,
-            shape=shape,
-            dtype=np_dtype,  # Use numpy dtype for storage
-            history_len=history_len,
-            is_producer=is_producer,
+            pool_metadata=pool_metadata,
             history_pad_strategy=history_pad_strategy,
-            device="cpu"  # Always use CPU for shared memory
+            force=force
         )
 
-    def _get_single(self, history_index: int) -> Optional[torch.Tensor]:
-        """Get single tensor at specified history index, converted to target device."""
-        # Get numpy array from parent
-        np_data = super()._get_single(history_index)
-        if np_data is None:
-            return None
-        
-        # Convert to torch tensor and move to target device
-        tensor = torch.from_numpy(np_data).to(dtype=self._torch_dtype)
-        if self._target_device.type != "cpu":
-            tensor = tensor.to(self._target_device)
-        return tensor
-    
-    def _get_history(self, count: int) -> Optional[torch.Tensor]:
-        """Get multiple history entries as a single tensor."""
-        # Get numpy array from parent
-        np_data = super()._get_history(count)
-        if np_data is None:
-            return None
-        
-        # Convert to torch tensor and move to target device
-        tensor = torch.from_numpy(np_data).to(dtype=self._torch_dtype)
-        if self._target_device.type != "cpu":
-            tensor = tensor.to(self._target_device)
-        return tensor
-    
-    def _to_numpy(self, data: torch.Tensor) -> np.ndarray:
-        """Convert torch tensor to numpy array."""
-        # Move to CPU if needed and convert to numpy
-        if data.device.type != "cpu":
-            data = data.cpu()
-        return data.detach().numpy()
-    
-    def publish(self, data: torch.Tensor) -> None:
-        """Publish torch tensor to shared pool."""
-        if not self.is_producer:
-            raise RuntimeError("Only producers can publish data")
+    def _init_tensor_pool(self, force=False) -> None:
+        """Initialize the shared tensor pool with the specified metadata."""
+        # Call parent to initialize the numpy pool
+        super()._init_tensor_pool(force=force)
+        # Convert numpy to torch tensor using shared memory
+        if self._tensor_pool is not None:
+            self._tensor_pool = torch.from_numpy(self._tensor_pool)
+
+    def _initialize_history_padding(self, fill=0) -> None:
+        """Initialize history padding based on the specified strategy."""
+        assert self._tensor_pool is not None, "Tensor pool must be initialized before padding."
+        if self._history_pad_strategy == "zero":
+            self._tensor_pool.fill_(0)
+        elif self._history_pad_strategy == "fill" and not self._history_initialized:
+            # Fill with a specific value for fill-padding
+            self._tensor_pool.fill_(fill)
+        else:
+            raise Exception(f"Unknown history padding strategy: {self._history_pad_strategy}")
+        self._history_initialized = True
+
+    def _write_data(self, data: Any, frame_index: int) -> None:
+        """Write torch tensor to the current tensor slot."""
         if not isinstance(data, torch.Tensor):
             raise TypeError(f"Expected torch.Tensor, got {type(data)}")
+        if self._tensor_pool is None or self._element_shape is None:
+            raise RuntimeError("Tensors not created yet")
+        if data.shape != self._element_shape:
+            raise ValueError(f"Shape mismatch: expected {self._element_shape}, got {data.shape}")
+        if data.dtype != self._tensor_pool.dtype:
+            raise TypeError(f"Dtype mismatch: expected {self._tensor_pool.dtype}, got {data.dtype}")
         
         # Convert to CPU numpy array for storage
         if data.device.type != "cpu":
             data = data.cpu()
+
+        # Write to array as torch tensor
+        self._tensor_pool[frame_index] = data
+
+class TorchConsumerBackend(NumpyConsumerBackend):
+    """
+    PyTorch consumer backend that inherits from NumPy backend.
+    
+    This backend provides zero-copy tensor views via torch.from_numpy().
+    """
+
+    def __init__(self,
+                 pool_metadata: Union[PoolMetadata, TorchCUDAPoolMetadata]):
+        # Store target device and dtype for tensor conversion
+        self._target_device = torch.device(pool_metadata.device if hasattr(pool_metadata, 'device') else 'cpu')
+        # Initialize NumPy backend - it handles all the shared memory setup
+        super().__init__(pool_metadata)
+
+    def _connect_tensor_pool(self, pool_metadata) -> None:
+        """Connect to the shared tensor pool using NumPy's mmap."""
+        # Call parent to connect to the numpy pool
+        super()._connect_tensor_pool(pool_metadata)
         
-        # Ensure correct dtype
-        if data.dtype != self._torch_dtype:
-            data = data.to(dtype=self._torch_dtype)
-        
-        # Convert to numpy and publish via parent
-        np_data = data.detach().numpy()
-        super().publish(np_data)
+        # Convert numpy array to torch tensor view
+        if self._tensor_pool is not None:
+            self._tensor_pool = torch.from_numpy(self._tensor_pool)
+
+    def _read_indices(self, indices):
+        """Read data from the tensor pool at specified indices and convert to torch tensor."""
+        # Get numpy data from parent (zero-copy)
+        if self._tensor_pool is None:
+            return None
+        indices = torch.tensor(indices, device=self._target_device)
+        tensor_slice = self._tensor_pool[indices]
+        return tensor_slice
+
+    def _to_numpy(self, data):
+        """Convert torch tensor to NumPy array."""
+        if isinstance(data, torch.Tensor):
+            # Move to CPU if needed and convert to numpy
+            if data.device.type != "cpu":
+                data = data.cpu()
+            return data.detach().numpy()
+        raise TypeError(f"Expected torch.Tensor, got {type(data)}")

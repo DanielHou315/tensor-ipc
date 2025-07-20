@@ -9,29 +9,42 @@ from cyclonedds.core import Listener
 from cyclonedds.util import duration
 from cyclonedds.qos import Qos, Policy
 
-from ..metadata import (
+from .metadata import (
     PoolProgressMessage,
     PoolMetadata,
     TorchCUDAPoolMetadata,
-    MetadataCreator
 )
 
 metadata_qos = Qos(
     Policy.Durability.Transient,
-    Policy.History.KeepLast(1),
+    Policy.History.KeepLast(1)
 )
+PROC_DDS_PARTICIPANT = DomainParticipant()
+
+def is_topic_published(topic_name):
+    """
+    Check if a topic is already published in the DDS
+    This is done by creating a subscription and checking if there are any matched publications.
+    """
+    topic = Topic(PROC_DDS_PARTICIPANT, topic_name, PoolMetadata)
+    sub = DataReader(PROC_DDS_PARTICIPANT, topic)
+    pubs = sub.get_matched_publications()
+    return len(pubs) > 0
+
 
 class DDSProducer:
     def __init__(self, 
-        participant: DomainParticipant, 
         topic_name: str, 
         metadata_msg: Union[
             PoolMetadata,
             TorchCUDAPoolMetadata,
         ],
+        dds_participant: DomainParticipant|None=None,
         keep_last: int = 10
     ):
-        self._dp = participant
+        if dds_participant is None:
+            dds_participant = PROC_DDS_PARTICIPANT
+        self._dp = dds_participant
 
         # Topic setup
         # We setup the main topic name to produce metadata once on startup
@@ -41,9 +54,9 @@ class DDSProducer:
         _metadata_type = type(metadata_msg)
 
         self._metadata = metadata_msg
-        self._metadata_topic = Topic(participant, f"polyipc_{topic_name}", _metadata_type)
+        self._metadata_topic = Topic(self._dp, f"polyipc_{topic_name}", _metadata_type)
         self._metadata_heartbeat = -1
-        self._metadata_writer = DataWriter(participant, self._metadata_topic, metadata_qos)
+        self._metadata_writer = DataWriter(self._dp, self._metadata_topic, metadata_qos)
         # Publish initial metadata
         self._publish_metadata()
 
@@ -52,8 +65,8 @@ class DDSProducer:
             Policy.Durability.TransientLocal,
             Policy.History.KeepLast(keep_last),
         )
-        self._progress_topic = Topic(participant, f"polyipc_{topic_name}_progress", PoolProgressMessage)
-        self._progress_writer = DataWriter(participant, self._progress_topic, progress_qos)
+        self._progress_topic = Topic(self._dp, f"polyipc_{topic_name}_progress", PoolProgressMessage)
+        self._progress_writer = DataWriter(self._dp, self._progress_topic, progress_qos)
 
     def _publish_metadata(self):
         """Publish metadata to the DDS."""
@@ -71,22 +84,24 @@ class DDSProducer:
 
 class DDSConsumer:
     def __init__(self, 
-        participant: DomainParticipant, 
         topic_name: str, 
         metadata_type: Type[Union[PoolMetadata, TorchCUDAPoolMetadata]],
         keep_last: int = 10, 
+        dds_participant: DomainParticipant|None = None,
         new_data_callback=None,
         connection_lost_callback=None
     ):
-        self._dp = participant
+        if dds_participant is None:
+            dds_participant = PROC_DDS_PARTICIPANT
+        self._dp = dds_participant
 
         # Topic setup
         # We setup the main topic name to acquire metadata on startup, and repeat on all read attempts until success
         # and a progress topic to read pool progress messages at high rate
         
         self._topic_name = topic_name
-        self._metadata_topic = Topic(participant, f"polyipc_{topic_name}", metadata_type)
-        self._metadata_reader = DataReader(participant, self._metadata_topic)
+        self._metadata_topic = Topic(self._dp, f"polyipc_{topic_name}", metadata_type)
+        self._metadata_reader = DataReader(self._dp, self._metadata_topic)
 
         progress_qos = Qos(
             Policy.Durability.TransientLocal,
@@ -100,9 +115,9 @@ class DDSConsumer:
             callback_kwargs['on_liveliness_lost'] = connection_lost_callback
 
         self._progress_listener = Listener(**callback_kwargs)
-        self._progress_topic = Topic(participant, f"polyipc_{topic_name}_progress", PoolProgressMessage)
+        self._progress_topic = Topic(self._dp, f"polyipc_{topic_name}_progress", PoolProgressMessage)
         self._progress_reader = DataReader(
-            participant,
+            self._dp,
             self._progress_topic,
             progress_qos,
             listener=self._progress_listener
@@ -111,9 +126,9 @@ class DDSConsumer:
         # Attempt initial connection, and if fails, subsequent reads will retry
         self._connected = False
         self._metadata = None
-        self._connect()
+        self.connect()
 
-    def _connect(self):
+    def connect(self):
         if self._connected:
             return
         try:
@@ -124,11 +139,12 @@ class DDSConsumer:
             self._connected = True
         except Exception as e:
             print(f"Error connecting to DDS: {e}")
+        return self._connected
 
     def read_next_progress(self, timeout=100):
         # Attempt re-connection if not connected
         if not self._connected:
-            self._connect()
+            self.connect()
             if not self._connected:
                 return None
             
@@ -154,7 +170,7 @@ class DDSConsumer:
     def read_all_progress(self, latest_first=True):
         # Attempt re-connection if not connected
         if not self._connected:
-            self._connect()
+            self.connect()
             if not self._connected:
                 return None
             

@@ -7,7 +7,7 @@ import time
 import sys
 sys.path.append("src/")
 from tensor_ipc.core.dds import DDSProducer, DDSConsumer
-from tensor_ipc.metadata import PoolMetadata, PoolProgressMessage, MetadataCreator
+from tensor_ipc.core.metadata import PoolMetadata, PoolProgressMessage, MetadataCreator
 
 
 def test_dds():

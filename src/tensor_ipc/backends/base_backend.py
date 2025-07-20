@@ -5,11 +5,7 @@ Each backend creates a shared tensor pool with shape (history_len, *sample_shape
 from __future__ import annotations
 from typing import Optional, Any, Union, Literal
 from abc import ABC, abstractmethod
-import numpy as np
-
-# from cyclonedds.domain import DomainParticipant
-# from .dds import DDSProducer, DDSConsumer
-from ..metadata import PoolMetadata, TorchCUDAPoolMetadata
+from ..core.metadata import PoolMetadata, TorchCUDAPoolMetadata
 
 # History padding strategies
 HistoryPadStrategy = Literal["zero", "fill"]
@@ -19,6 +15,7 @@ class TensorProducerBackend(ABC):
     def __init__(self,
         pool_metadata: Union[PoolMetadata, TorchCUDAPoolMetadata],
         history_pad_strategy: HistoryPadStrategy = "zero",
+        force: bool = False,
     ):
         self._pool_metadata = pool_metadata
 
@@ -31,34 +28,28 @@ class TensorProducerBackend(ABC):
         self._tensor_pool: Optional[Any] = None
         
         # Current frame tracking
-        self._current_frame_index = 0
+        self._current_frame_index = -1
         
         # Initialize the tensor pool
-        self._history_intialized = False
-        self._init_tensor_pool()
+        self._history_initialized = False
+        self._init_tensor_pool(force=force)
         if self._history_pad_strategy == "zero":
             self._initialize_history_padding(fill=0)
 
     @abstractmethod
-    def _init_tensor_pool(self) -> None:
+    def _init_tensor_pool(self, force=False) -> None:
         """Initialize the shared tensor pool. Must be implemented by subclasses."""
-        pass
+        raise NotImplementedError("Subclasses must implement _init_tensor_pool")
 
+    @abstractmethod
     def _initialize_history_padding(self, fill=0) -> None:
         """Initialize history padding based on the specified strategy."""
-        assert self._tensor_pool is not None, "Tensor pool must be initialized before padding."
-        if self._history_pad_strategy == "zero":
-            # Fill with zeros for zero-padding
-            self._tensor_pool.fill(0)
-        elif self._history_pad_strategy == "fill" and not self._history_initialized:
-            # Fill with a specific value for fill-padding
-            self._tensor_pool.fill(fill)
-        else:
-            raise Exception(f"Unknown history padding strategy: {self._history_pad_strategy}")
-        self._history_initialized = True
+        raise NotImplementedError("Subclasses must implement _initialize_history_padding")
 
     def write(self, data: Any) -> int:
         """Publish data to the current tensor slot and notify consumers."""
+        # Update frame index
+        self._current_frame_index = (self._current_frame_index + 1) % self._pool_metadata.history_len
 
         # Write data to the current slot
         self._write_data(data, self._current_frame_index)
@@ -67,8 +58,6 @@ class TensorProducerBackend(ABC):
         if not self._history_initialized and self._history_pad_strategy == "fill":
             self._initialize_history_padding()
 
-        # Update frame index
-        self._current_frame_index = (self._current_frame_index + 1) % self._pool_metadata.history_len
         return self._current_frame_index
 
     @abstractmethod
@@ -171,6 +160,11 @@ class TensorConsumerBackend(ABC):
     def max_history_len(self) -> int:
         """Get the maximum history length."""
         return self._pool_metadata.history_len
+    
+    @property
+    def current_latest_index(self) -> int:
+        """Get the latest frame index."""
+        return self._latest_data_frame_index
     
     def cleanup(self) -> None:
         """Clean up backend resources."""

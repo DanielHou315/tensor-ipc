@@ -6,22 +6,12 @@ with zero-copy tensor views and device conversion support.
 """
 from __future__ import annotations
 from .base_backend import HistoryPadStrategy
-from ..utils import get_torch, DependencyError
-
-# Runtime imports - check availability first
-torch_avail = get_torch()
-TORCH_AVAILABLE = torch_avail is not None
-
-if not TORCH_AVAILABLE:
-    raise DependencyError(
-        "PyTorch is not available. Install it with: pip install torch"
-    )
+from ..core.metadata import PoolMetadata
 
 # Import torch at module level
 import torch
 
-
-class TorchCUDABackend(TensorBackend):
+class TorchCUDAProducerBackend(TensorProducerBackend):
     """
     Zero-copy CUDA backend: one producer, many readers, all on the
     same GPU (or peer-to-peer enabled GPUs).  Uses the exact IPC path
@@ -29,9 +19,6 @@ class TorchCUDABackend(TensorBackend):
       storage()._share_cuda_()  and
     torch.cuda.CUDAStorage._new_shared_cuda().
     """
-
-    IPC_STRUCT_FMT = "<iQq"                      # device, handle(8), size
-    IPC_STRUCT_SIZE = struct.calcsize(IPC_STRUCT_FMT)
 
     def __init__(self,
                  pool_name: str,
@@ -211,3 +198,25 @@ class TorchCUDABackend(TensorBackend):
     def cleanup(self):
         super().cleanup()        # semaphores & metadata
         self._tensor_pool = None   # let CUDAStorage ref-count free itself
+
+
+
+class TorchCUDAConsumerBackend(TorchCUDAProducerBackend):
+    """
+    Consumer backend for CUDA tensors. Inherits from TorchCUDAProducerBackend
+    to reuse the shared memory and IPC logic.
+    """
+    
+    def __init__(self, pool_metadata: PoolMetadata):
+        super().__init__(
+            pool_name=pool_metadata.name,
+            shape=pool_metadata.shape,
+            dtype=pool_metadata.dtype,
+            history_len=pool_metadata.history_len,
+            is_producer=False,
+            history_pad_strategy=pool_metadata.history_pad_strategy,
+            device=pool_metadata.device
+        )
+        
+        # Connect to existing shared memory pool
+        self._connect_pool()

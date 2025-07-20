@@ -2,10 +2,6 @@
 Backend initialization and factory functions for Victor Python IPC.
 """
 from __future__ import annotations
-from typing import Any
-
-import numpy as np
-from ..utils import get_torch, DependencyError
 
 # Import base classes and types
 from .base_backend import (
@@ -13,105 +9,87 @@ from .base_backend import (
     TensorConsumerBackend,
     TensorProducerBackend,
 )
+from ..core.metadata import PoolMetadata
+
+class DependencyError(ImportError):
+    """Raised when a required dependency is not available."""
+    pass
+
+_available_backends = {}
+
+# 1. Import NumPy backend
+import numpy as np
 from .numpy_backend import (
     NumpyProducerBackend,
     NumpyConsumerBackend,
 )
+_available_backends["numpy"] = (NumpyProducerBackend, NumpyConsumerBackend)
 
-# Handle PyTorch imports with availability checking
-torch = get_torch()
-TORCH_AVAILABLE = torch is not None
-CUDA_AVAILABLE = False
+# 2. Import PyTorch backend if available
+try:
+    import torch
+    from torch import multiprocessing as mp
+except ImportError:
+    torch = None
+    mp = None
 
-# Only import torch backends if PyTorch is available
-if TORCH_AVAILABLE:
-    try:
-        from .torch_backend import TorchBackend
-        # Check CUDA availability
-        if torch is not None and torch.cuda.is_available():
-            CUDA_AVAILABLE = True
-    except ImportError:
-        # Fallback if torch backends fail to import
-        TORCH_AVAILABLE = False
-        TorchBackend = None
-else:
-    TorchBackend = None
+# Import pytorch cpu backend
+if torch is not None:
+    from .torch_backend import (
+        TorchProducerBackend,
+        TorchConsumerBackend
+    )
+    _available_backends["torch"] = (TorchProducerBackend, TorchConsumerBackend)
 
-# TorchCUDABackend is not available (commented out due to PyTorch compatibility issues)
-TorchCUDABackend = None
+# Import pytorch cuda backend
+if torch is not None and  torch.cuda.is_available():
+    from .torch_backend_cuda import (
+        TorchCUDAProducerBackend,
+        TorchCUDAConsumerBackend,
+    )
+    _available_backends["torch_cuda"] = (TorchCUDAProducerBackend, TorchCUDAConsumerBackend)
 
-
-def create_backend(backend_type: str, pool_name: str, shape: tuple, dtype: Any,
-                  history_len: int = 1, is_producer: bool = False, 
-                  history_pad_strategy: HistoryPadStrategy = "zero",
-                  device: str = "cpu") -> TensorBackend:
+def create_producer_backend(
+    pool_metadata: PoolMetadata,
+    history_pad_strategy: HistoryPadStrategy = "zero",
+    force: bool = False
+) -> (TensorProducerBackend, PoolMetadata):
     """Factory function to create the appropriate backend."""
-    if backend_type == "numpy":
-        return NumpyBackend(pool_name, shape, dtype, history_len, is_producer, history_pad_strategy, device)
-    
-    elif backend_type == "torch":
-        if not TORCH_AVAILABLE or TorchBackend is None:
-            raise DependencyError(
-                "PyTorch backend requested but PyTorch is not available. "
-                "Install PyTorch with: pip install torch"
-            )
-        
-        # TorchBackend now handles all devices by converting to CPU for sharing
-        # and back to target device when retrieving
-        return TorchBackend(pool_name, shape, dtype, history_len, is_producer, history_pad_strategy, device)
-    
-    else:
-        raise ValueError(f"Unsupported backend type: {backend_type}")
+    backend_type = pool_metadata.backend_type
+    if backend_type not in _available_backends.keys():
+        raise ValueError(f"Unsupported backend type: {backend_type}. Available backends: {list(_available_backends.keys())}")
+    pb = _available_backends[backend_type][0](
+        pool_metadata,
+        history_pad_strategy=history_pad_strategy,
+        force=force,
+    )
+    return (pb, pb.metadata)
 
-
-def detect_backend_from_data(data: Any) -> str:
-    """Detect the appropriate backend type from sample data."""
-    if isinstance(data, np.ndarray):
-        return "numpy"
-    elif TORCH_AVAILABLE and torch and isinstance(data, torch.Tensor):
-        return "torch"
-    else:
-        raise TypeError(f"Unsupported data type: {type(data)}")
-
+def create_consumer_backend(
+    pool_metadata: PoolMetadata,
+) -> TensorConsumerBackend:
+    """Factory function to create a consumer backend based on pool metadata."""
+    backend_type = pool_metadata.backend_type
+    if backend_type not in _available_backends.keys():
+        raise ValueError(f"Unsupported backend type: {backend_type}. Available backends: {list(_available_backends.keys())}")
+    return _available_backends[backend_type][1](pool_metadata)
 
 def get_available_backends() -> list[str]:
     """Get list of available backend types."""
-    backends = ["numpy"]
-    if TORCH_AVAILABLE:
-        backends.append("torch")
-    return backends
-
+    return list(_available_backends.keys())
 
 def is_backend_available(backend_type: str) -> bool:
     """Check if a specific backend is available."""
-    if backend_type == "numpy":
-        return True
-    elif backend_type == "torch":
-        return TORCH_AVAILABLE
+    return backend_type in _available_backends
+
+def detect_backend_from_data(data) -> str:
+    """Detect the backend type based on the data type."""
+    if isinstance(data, np.ndarray):
+        return "numpy"
+    elif torch is not None and isinstance(data, torch.Tensor):
+        if data.is_cuda:
+            return "torch_cuda"
+        else:
+            return "torch"
     else:
-        return False
-
-
-def is_cuda_available() -> bool:
-    """Check if CUDA is available for PyTorch backends."""
-    return CUDA_AVAILABLE
-
-
-def get_available_devices() -> list[str]:
-    """Get list of available devices."""
-    devices = ["cpu"]
-    if CUDA_AVAILABLE and torch is not None:
-        for i in range(torch.cuda.device_count()):
-            devices.append(f"cuda:{i}")
-    return devices
-
-
-# Export commonly used classes and functions
-__all__ = [
-    'TensorBackend', 'HistoryPadStrategy',
-    'NumpyBackend', 
-    'TorchBackend',  # Handles all devices with CPU sharing + device conversion
-    'create_backend', 'detect_backend_from_data',
-    'get_available_backends', 'is_backend_available',
-    'TORCH_AVAILABLE', 'CUDA_AVAILABLE', 'is_cuda_available', 'get_available_devices'
-]
+        raise ValueError(f"Unsupported data type for backend detection: {type(data)}")

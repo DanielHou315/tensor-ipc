@@ -4,7 +4,7 @@ Provides validation for ROS message conversions to ensure they work correctly.
 """
 from typing import Any, Type
 import numpy as np
-from ..utils import get_ros2_numpy
+
 
 # Get ros2_numpy if available
 ros2_numpy_info = get_ros2_numpy()

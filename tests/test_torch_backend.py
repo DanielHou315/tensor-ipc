@@ -1,36 +1,49 @@
 import sys
 sys.path.append("src/")
+
 import numpy as np
+import torch
 
 from tensor_ipc.core.metadata import MetadataCreator
-from tensor_ipc.backends.numpy_backend import NumpyProducerBackend, NumpyConsumerBackend
+from tensor_ipc.backends.torch_backend import (
+    TorchProducerBackend, 
+    TorchConsumerBackend
+)
 import pytest
 import itertools
 
 import time
 
 matrix_test_params = {
-    "dtype": [np.float32, np.uint8, np.int32],
+    "dtype": [torch.float32, torch.uint8, torch.int32],
     "shape": [(7,), (4,3), (1024, 768, 3), (1920, 1080, 3)],
     "history_len": [5, 20],
     "read_history": [2, 5],
 }
 
-def template_test_numpy_backend(
+# matrix_test_params = {
+#     "dtype": [torch.float32],
+#     "shape": [(7,)],
+#     "history_len": [5],
+#     "read_history": [2],
+# }
+
+
+def template_test_torch_backend(
     shape=(1, 3),
-    dtype=np.float32,
+    dtype=torch.float32,
     history_len=5,
     read_history=2,
     num_frames=15
 ):
-    print("Testing NumpyBackend Producer-Consumer")
+    print("Testing TorchBackend Producer-Consumer")
     print("=" * 50)
 
     # Create sample data for metadata
-    sample_data = np.ones(shape, dtype=dtype)
+    sample_data = torch.ones(shape, dtype=dtype)
 
     # Create metadata
-    pool_metadata = MetadataCreator.from_numpy_sample(
+    pool_metadata = MetadataCreator.from_torch_sample(
         name="test_pool",
         sample_data=sample_data,
         history_len=history_len
@@ -39,13 +52,14 @@ def template_test_numpy_backend(
     print(f"Pool shape: {shape}")
     print(f"History length: {history_len}")
     print(f"Total pool shape: ({history_len}, {shape})")
+    print(f"Data type: {dtype}")
     print(f"Shared memory size: {pool_metadata.total_size} bytes")
     print(f"Shared memory name: {pool_metadata.shm_name}")
     print()
 
     # Create producer
     print("Creating producer...")
-    producer = NumpyProducerBackend(
+    producer = TorchProducerBackend(
         pool_metadata=pool_metadata,
         history_pad_strategy="zero",
         force=True
@@ -55,7 +69,7 @@ def template_test_numpy_backend(
     time.sleep(0.1)
 
     # Create consumer
-    consumer = NumpyConsumerBackend(
+    consumer = TorchConsumerBackend(
         pool_metadata=pool_metadata,
     )
 
@@ -77,9 +91,9 @@ def template_test_numpy_backend(
 
     for i in range(num_frames):
         # Create test data: ones array multiplied by frame index
-        test_data = np.ones(shape, dtype=dtype) * (i + 1)
-        published_data.append(test_data.copy())
-        
+        test_data = torch.ones(shape, dtype=dtype) * (i + 1)
+        published_data.append(test_data.clone())
+
         # Write data
         frame_idx = producer.write(test_data)
         # print(f"Frame {i+1}: wrote to slot {frame_idx} at {producer._pool_metadata.shm_name}")
@@ -96,8 +110,8 @@ def template_test_numpy_backend(
             # print(f"  Read from {consumer._pool_metadata.shm_name} at indices {read_indices.tolist()}")
 
             # Compute reverse of published data for verification
-            expected_data = np.array(published_data[-read_history:][::-1])
-            assert np.allclose(read_data, expected_data), \
+            expected_data = torch.stack(published_data[-read_history:][::-1])
+            assert torch.allclose(read_data, expected_data), \
                 f"Mismatch in read data at frame {i+1}: expected {expected_data}, got {read_data}"
             # print(f"  ✓ Read verification passed for frames ending at {i+1}")
 
@@ -105,15 +119,15 @@ def template_test_numpy_backend(
 
     # Test reading full history
     print("\nTesting full history read...")
-    full_history = consumer.read(slice(None))  # Read all history
+    full_history = consumer.read(indices=np.arange(history_len))  # Read all history
     if full_history is None:
         raise RuntimeError("Failed to read full history from consumer")
 
     assert full_history.shape == (history_len,) + shape, f"Wrong full history shape: {full_history.shape}"
     print(f"✓ Full history read successful, shape: {full_history.shape}")
 
-    # Test as_numpy parameter (should be no-op for numpy backend)
-    numpy_data = consumer.read(slice(0, 2), as_numpy=True)
+    # Test as_numpy parameter
+    numpy_data = consumer.read([0,1], as_numpy=True)
     assert isinstance(numpy_data, np.ndarray), "as_numpy=True should return numpy array"
     print("✓ as_numpy parameter works correctly")
 
@@ -124,18 +138,18 @@ def template_test_numpy_backend(
     print("✓ Cleanup completed")
 
     print("\n" + "=" * 50)
-    print("All tests passed! NumpyBackend is working correctly.")
+    print("All tests passed! TorchBackend is working correctly.")
 
 @pytest.mark.parametrize("dtype", matrix_test_params["dtype"])
 @pytest.mark.parametrize("shape", matrix_test_params["shape"])
 @pytest.mark.parametrize("history_len", matrix_test_params["history_len"])
 @pytest.mark.parametrize("read_history", matrix_test_params["read_history"])
-def test_numpy_backend_matrix(dtype, shape, history_len, read_history):
+def test_torch_backend_matrix(dtype, shape, history_len, read_history):
     """Pytest parameterized test for all combinations of test parameters."""
     # Ensure read_history doesn't exceed history_len
     read_history = min(read_history, history_len)
-    
-    template_test_numpy_backend(
+
+    template_test_torch_backend(
         shape=shape,
         dtype=dtype,
         history_len=history_len,
@@ -190,13 +204,13 @@ if __name__ == "__main__":
         read_history = min(read_history, history_len)
         
         print(f"\nTest {test_num}/{total_tests}:")
-        print(f"  dtype: {dtype.__name__}")
+        print(f"  dtype: {dtype}")
         print(f"  shape: {shape}")
         print(f"  history_len: {history_len}")
         print(f"  read_history: {read_history}")
         
         try:
-            template_test_numpy_backend(
+            template_test_torch_backend(
                 shape=shape,
                 dtype=dtype,
                 history_len=history_len,
@@ -223,7 +237,7 @@ if __name__ == "__main__":
     if failed_tests:
         print("\nFAILED TESTS:")
         for test_num, dtype, shape, history_len, read_history, error in failed_tests:
-            print(f"  Test {test_num}: dtype={dtype.__name__}, shape={shape}, "
+            print(f"  Test {test_num}: dtype={dtype}, shape={shape}, "
                   f"history_len={history_len}, read_history={read_history}")
             print(f"    Error: {error}")
     else:

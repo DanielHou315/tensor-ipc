@@ -21,16 +21,27 @@ metadata_qos = Qos(
 )
 PROC_DDS_PARTICIPANT = DomainParticipant()
 
-def is_topic_published(topic_name):
+def is_topic_published(topic_name, domain_id: int = 0) -> bool:
     """
     Check if a topic is already published in the DDS
     This is done by creating a subscription and checking if there are any matched publications.
-    """
-    topic = Topic(PROC_DDS_PARTICIPANT, topic_name, PoolMetadata)
-    sub = DataReader(PROC_DDS_PARTICIPANT, topic)
-    pubs = sub.get_matched_publications()
-    return len(pubs) > 0
 
+    Note: This is a SLOW operation, so it should not be used in performance-critical paths.
+    """
+    # topic = Topic(PROC_DDS_PARTICIPANT, topic_name, PoolMetadata)
+    # sub = DataReader(PROC_DDS_PARTICIPANT, topic)
+    # print("Getting publishers for topic:", topic_name)
+    # pubs = sub.get_publisher()
+    # print(pubs)
+
+    # The Python API is broken and subject to change, so we use the terminal as a workaround
+    import subprocess
+    cmd = f"ddsls --topic dcpspublication | grep -c 'topic_name: {topic_name}'"
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    if result.returncode != 0:
+        return False
+    num_pubs = int(result.stdout.strip())
+    return num_pubs > 0
 
 class DDSProducer:
     def __init__(self, 
@@ -54,7 +65,7 @@ class DDSProducer:
         _metadata_type = type(metadata_msg)
 
         self._metadata = metadata_msg
-        self._metadata_topic = Topic(self._dp, f"polyipc_{topic_name}", _metadata_type)
+        self._metadata_topic = Topic(self._dp, f"tensoripc_{topic_name}_meta", _metadata_type)
         self._metadata_heartbeat = -1
         self._metadata_writer = DataWriter(self._dp, self._metadata_topic, metadata_qos)
         # Publish initial metadata
@@ -65,7 +76,7 @@ class DDSProducer:
             Policy.Durability.TransientLocal,
             Policy.History.KeepLast(keep_last),
         )
-        self._progress_topic = Topic(self._dp, f"polyipc_{topic_name}_progress", PoolProgressMessage)
+        self._progress_topic = Topic(self._dp, f"tensoripc_{topic_name}_progress", PoolProgressMessage)
         self._progress_writer = DataWriter(self._dp, self._progress_topic, progress_qos)
 
     def _publish_metadata(self):
@@ -100,7 +111,7 @@ class DDSConsumer:
         # and a progress topic to read pool progress messages at high rate
         
         self._topic_name = topic_name
-        self._metadata_topic = Topic(self._dp, f"polyipc_{topic_name}", metadata_type)
+        self._metadata_topic = Topic(self._dp, f"tensoripc_{topic_name}_meta", metadata_type)
         self._metadata_reader = DataReader(self._dp, self._metadata_topic)
 
         progress_qos = Qos(
@@ -115,7 +126,7 @@ class DDSConsumer:
             callback_kwargs['on_liveliness_lost'] = connection_lost_callback
 
         self._progress_listener = Listener(**callback_kwargs)
-        self._progress_topic = Topic(self._dp, f"polyipc_{topic_name}_progress", PoolProgressMessage)
+        self._progress_topic = Topic(self._dp, f"tensoripc_{topic_name}_progress", PoolProgressMessage)
         self._progress_reader = DataReader(
             self._dp,
             self._progress_topic,

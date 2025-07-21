@@ -3,7 +3,6 @@ from typing import Any
 
 from ..backends import (
     create_producer_backend,
-    TensorProducerBackend,
     detect_backend_from_data
 )
 from .metadata import (
@@ -24,22 +23,27 @@ class TensorProducer:
         keep_last: int = 10
     ):
         # Ensure unique pub
-        if is_topic_published(self._pool_metadata.name):
-            raise ValueError(f"Topic '{self._pool_metadata.name}' is already published. Use a unique name.")
+        if is_topic_published(pool_metadata.name):
+            raise ValueError(f"Topic '{pool_metadata.name}' is already published. Use a unique name.")
 
         # Create the appropriate backend as producer
-        self.backend, self._pool_metadata = create_producer_backend(
+        self.backend = create_producer_backend(
             pool_metadata=pool_metadata,
             force=True,
         )
 
+        self._pool_metadata = self.backend.metadata
+
         # DDS producer for notifications
         self._dds_producer = DDSProducer(
-            pool_metadata.name, 
-            pool_metadata,
+            self._pool_metadata.name, 
+            self._pool_metadata,
             dds_participant=dds_participant,
             keep_last=keep_last
         )
+        
+        # Initialize cleanup flag
+        self._cleaned_up = False
 
     @classmethod
     def from_sample(cls,
@@ -69,8 +73,9 @@ class TensorProducer:
         Write data to the tensor pool and return the current frame index.
         """
         # Validate data matches expected shape and type
-        self._validate_input(data)
-
+        if not detect_backend_from_data(data) == self._pool_metadata.backend_type:
+            raise TypeError(f"Data backend type {detect_backend_from_data(data)} does not match pool backend type {self._pool_metadata.backend_type}")
+        
         # Write data using the backend's write method
         idx = self.backend.write(data)
 
@@ -81,16 +86,6 @@ class TensorProducer:
         )
         self._dds_producer.publish_progress(message)
         return idx
-
-    def _validate_input(self, data: Any) -> None:
-        """Validate input data matches pool metadata exactly."""
-        # Check data type
-        if not detect_backend_from_data(data) == self._pool_metadata.backend_type:
-            raise TypeError(f"Data backend type {detect_backend_from_data(data)} does not match pool backend type {self._pool_metadata.backend_type}")
-        # Check shape
-        if not data.shape == self._pool_metadata.shape:
-            raise ValueError(f"Input shape {data.shape} does not match pool shape {self._pool_metadata.shape}")
-        # Other checks are much much more difficult and backend dependent. 
 
     def __del__(self):
         """Automatic cleanup on object deletion."""

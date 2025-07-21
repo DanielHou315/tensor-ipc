@@ -50,10 +50,6 @@ class TorchProducerBackend(NumpyProducerBackend):
         history_pad_strategy: HistoryPadStrategy = "zero",
         force: bool = False
     ):
-        # Store target device and dtype for tensor conversion
-        self._target_device = torch.device(pool_metadata.device if hasattr(pool_metadata, 'device') else 'cpu')
-        self._torch_dtype = TORCH_TYPE_MAP.get(pool_metadata.dtype_str, torch.float32)
-        
         # Initialize NumPy backend - it handles all the shared memory setup
         super().__init__(
             pool_metadata=pool_metadata,
@@ -92,10 +88,23 @@ class TorchProducerBackend(NumpyProducerBackend):
         if data.dtype != self._tensor_pool.dtype:
             raise TypeError(f"Dtype mismatch: expected {self._tensor_pool.dtype}, got {data.dtype}")
         
-        # Convert to CPU numpy array for storage
-        if data.device.type != "cpu":
-            data = data.cpu()
-
+        # Convert to CPU or assert same device
+        if str(self._pool_metadata.device) == "cpu":
+            data = data.cpu()  # Ensure data is on CPU for shared memory
+        elif str(data.device).startswith('cuda') and str(self._pool_metadata.device).startswith('cuda'):
+            # For CUDA devices, extract device indices and compare
+            data_device_str = str(data.device)
+            pool_device_str = str(self._pool_metadata.device)
+            
+            # Extract device index (default to 0 if not specified)
+            data_idx = data_device_str.split(':')[1] if ':' in data_device_str else '0'
+            pool_idx = pool_device_str.split(':')[1] if ':' in pool_device_str else '0'
+            
+            if data_idx != pool_idx:
+                raise ValueError(f"CUDA device index mismatch: pool device {self._pool_metadata.device}, got {data.device}")
+        elif str(data.device) != str(self._pool_metadata.device):
+            raise ValueError(f"Data must be on the same device as the pool: {self._pool_metadata.device}, got {data.device}")
+        
         # Write to array as torch tensor
         self._tensor_pool[frame_index] = data
 
@@ -105,7 +114,6 @@ class TorchConsumerBackend(NumpyConsumerBackend):
     
     This backend provides zero-copy tensor views via torch.from_numpy().
     """
-
     def __init__(self,
                  pool_metadata: Union[PoolMetadata, TorchCUDAPoolMetadata]):
         # Store target device and dtype for tensor conversion
@@ -113,25 +121,31 @@ class TorchConsumerBackend(NumpyConsumerBackend):
         # Initialize NumPy backend - it handles all the shared memory setup
         super().__init__(pool_metadata)
 
-    def _connect_tensor_pool(self, pool_metadata) -> None:
+    def connect(self, pool_metadata) -> bool:
         """Connect to the shared tensor pool using NumPy's mmap."""
         # Call parent to connect to the numpy pool
-        super()._connect_tensor_pool(pool_metadata)
+        if self._connected:
+            return False
         
+        result = super().connect(pool_metadata)
+        if result is False:
+            return False
         # Convert numpy array to torch tensor view
         if self._tensor_pool is not None:
             self._tensor_pool = torch.from_numpy(self._tensor_pool)
+        return True
 
     def _read_indices(self, indices):
         """Read data from the tensor pool at specified indices and convert to torch tensor."""
         # Get numpy data from parent (zero-copy)
-        if self._tensor_pool is None:
+        if not self._connected:
             return None
+        
         indices = torch.tensor(indices, device=self._target_device)
         tensor_slice = self._tensor_pool[indices]
         return tensor_slice
 
-    def _to_numpy(self, data):
+    def to_numpy(self, data):
         """Convert torch tensor to NumPy array."""
         if isinstance(data, torch.Tensor):
             # Move to CPU if needed and convert to numpy
@@ -139,3 +153,13 @@ class TorchConsumerBackend(NumpyConsumerBackend):
                 data = data.cpu()
             return data.detach().numpy()
         raise TypeError(f"Expected torch.Tensor, got {type(data)}")
+    
+    def from_numpy(self, data: np.ndarray) -> torch.Tensor:
+        """Convert NumPy array to torch tensor."""
+        if isinstance(data, np.ndarray):
+            # Convert numpy array to torch tensor
+            return torch.from_numpy(data).to(self._target_device)
+        raise TypeError(f"Expected np.ndarray, got {type(data)}")
+
+    def cleanup(self) -> None:
+        super().cleanup()

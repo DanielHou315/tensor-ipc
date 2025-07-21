@@ -14,7 +14,7 @@ class Pool2ROSProducer(TensorProducer):
         super().__init__(pool_metadata)
         self._connected = False
 
-    def _connect_tensor_pool(self, pool_metadata) -> None:
+    def connect_tensor_pool(self, pool_metadata) -> None:
         """Connect to the ROS topic and initialize it."""
         # Implement ROS-specific connection logic here
         self._connected = True  # Set to True after successful connection

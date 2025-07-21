@@ -102,16 +102,16 @@ class TensorConsumerBackend(ABC):
 
         # Try initial connection
         try:
-            self._connect_tensor_pool(self._pool_metadata)
+            self.connect(self._pool_metadata)
         except Exception as e:
             print(f"Waiting for producer '{self._pool_metadata.name}' to startup: {e}")
             self._connected = False
 
     @abstractmethod
-    def _connect_tensor_pool(self, pool_metadata) -> None:
+    def connect(self, pool_metadata) -> bool:
         """Connect to the tensor pool and initialize it."""
         # This method should be implemented by subclasses to handle specific backend logic
-        raise NotImplementedError("Subclasses must implement _connect_tensor_pool")
+        raise NotImplementedError("Subclasses must implement connect_tensor_pool")
 
     def read(self, indices, as_numpy=False):
         """
@@ -134,10 +134,16 @@ class TensorConsumerBackend(ABC):
         raise NotImplementedError("Subclasses must implement _read_indices method")
 
     @abstractmethod
-    def _to_numpy(self, data):
+    def to_numpy(self, data):
         """Convert data to NumPy array if necessary."""
         # This method should be implemented by subclasses to handle specific conversion logic
         raise NotImplementedError("Subclasses must implement _to_numpy method")
+    
+    @abstractmethod
+    def from_numpy(self, data):
+        """Convert NumPy array to backend-specific tensor."""
+        # This method should be implemented by subclasses to handle specific conversion logic
+        raise NotImplementedError("Subclasses must implement from_numpy method")
     
     def update_frame_index(self, latest_index: int) -> None:
         """
@@ -166,6 +172,13 @@ class TensorConsumerBackend(ABC):
         """Get the latest frame index."""
         return self._latest_data_frame_index
     
+    def disconnect(self) -> None:
+        """Disconnect from the tensor pool."""
+        self._connected = False
+        self.cleanup()
+        self._tensor_pool = None
+    
+    @abstractmethod 
     def cleanup(self) -> None:
         """Clean up backend resources."""
         pass

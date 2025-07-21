@@ -28,7 +28,6 @@ _available_backends["numpy"] = (NumpyProducerBackend, NumpyConsumerBackend)
 # 2. Import PyTorch backend if available
 try:
     import torch
-    from torch import multiprocessing as mp
 except ImportError:
     torch = None
     mp = None
@@ -43,7 +42,7 @@ if torch is not None:
 
 # Import pytorch cuda backend
 if torch is not None and  torch.cuda.is_available():
-    from .torch_backend_cuda import (
+    from .torch_cuda_backend import (
         TorchCUDAProducerBackend,
         TorchCUDAConsumerBackend,
     )
@@ -58,12 +57,11 @@ def create_producer_backend(
     backend_type = pool_metadata.backend_type
     if backend_type not in _available_backends.keys():
         raise ValueError(f"Unsupported backend type: {backend_type}. Available backends: {list(_available_backends.keys())}")
-    pb = _available_backends[backend_type][0](
+    return _available_backends[backend_type][0](
         pool_metadata,
         history_pad_strategy=history_pad_strategy,
         force=force,
     )
-    return (pb, pb.metadata)
 
 def create_consumer_backend(
     pool_metadata: PoolMetadata,

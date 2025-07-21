@@ -10,7 +10,6 @@ import numpy as np
 from .metadata import PoolMetadata, MetadataCreator
 from ..backends import (
     create_consumer_backend,
-    TensorConsumerBackend,
     detect_backend_from_data
 )
 
@@ -32,7 +31,7 @@ class TensorConsumer:
         self._pool_metadata = pool_metadata
 
         # Backend will be created and handle all connection logic
-        self.backend: TensorConsumerBackend = create_consumer_backend(
+        self.backend = create_consumer_backend(
             pool_metadata=self._pool_metadata,
         )
 
@@ -137,6 +136,7 @@ class TensorConsumer:
         if not res:
             print(f"Failed to connect to DDS for pool '{self._pool_metadata.name}'")
             return
+        
         # Otherwise, backend is connected
         recv_pool_metadata = self._dds_consumer.metadata
         if recv_pool_metadata is None \
@@ -146,7 +146,7 @@ class TensorConsumer:
         
         # Still update since IPC handle may be different for CUDA
         self._pool_metadata = recv_pool_metadata
-        self.backend._connect_tensor_pool(self._pool_metadata)
+        self.backend.connect(self._pool_metadata)
 
         # Update progress
         with self._connection_lock:
@@ -154,7 +154,11 @@ class TensorConsumer:
 
     def _on_new_progress(self, data_reader):
         """Handle new progress notification from DDS."""
-        assert self._connected, "Consumer must be connected to receive progress updates"
+        if not self._connected:
+            self._connect()
+            if not self._connected:
+                return
+            
         # Update latest index
         with self._update_latest_index_lock:
             self.backend.update_frame_index(data_reader.read(N=1)[-1].latest_index)
@@ -171,10 +175,11 @@ class TensorConsumer:
 
     def _on_connection_lost(self) -> None:
         """Handle connection loss notification from DDS."""
-        if not self._connected or not self._pool_metadata:
+        if not self._connected:
             return
         print(f"Connection to tensor pool '{self._pool_metadata.name}' lost.")
         with self._connection_lock:
+            self.backend.cleanup()
             self._connected = False
 
     def __del__(self):

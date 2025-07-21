@@ -159,9 +159,12 @@ class NumpyConsumerBackend(TensorConsumerBackend):
         self._shared_mmap = None
         super().__init__(pool_metadata)
 
-    def _connect_tensor_pool(self, pool_metadata) -> None:
+    def connect(self, pool_metadata) -> bool:
         """Connect to existing NumPy tensor pool."""
         # Consumer connects to existing shared memory
+        if self._connected:
+            return False
+        
         self._metadata = pool_metadata
         assert isinstance(pool_metadata, (PoolMetadata, TorchCUDAPoolMetadata)), \
             f"Expected PoolMetadata or TorchCUDAPoolMetadata, got {type(pool_metadata)}"
@@ -182,8 +185,8 @@ class NumpyConsumerBackend(TensorConsumerBackend):
             dtype=NUMPY_TYPE_MAP[pool_metadata.dtype_str],
             buffer=self._shared_mmap
         )
-        self._pool_connected = True
         self._connected = True
+        return True
 
     def _read_indices(self, indices):
         """Read data from the tensor pool at specified indices."""
@@ -193,12 +196,18 @@ class NumpyConsumerBackend(TensorConsumerBackend):
         tensor_slice.flags.writeable = False  # Ensure read-only access
         return tensor_slice
 
-    def _to_numpy(self, data):
+    def to_numpy(self, data):
         """Convert data to NumPy array if necessary."""
         # Data is already numpy array
         if isinstance(data, np.ndarray):
             return data
         raise TypeError(f"Expected numpy.ndarray, got {type(data)}")
+    
+    def from_numpy(self, data: np.ndarray) -> Any:
+        """Convert NumPy array to backend-specific tensor."""
+        if not isinstance(data, np.ndarray):
+            raise TypeError(f"Expected numpy.ndarray, got {type(data)}")
+        return data
 
     def cleanup(self) -> None:
         """

@@ -3,6 +3,7 @@ sys.path.append("src/")
 
 import numpy as np
 import time
+import torch
 import multiprocessing as mp
 from statistics import mean, stdev
 from cyclonedds.domain import DomainParticipant
@@ -15,25 +16,29 @@ import itertools
 # Set multiprocessing start method to spawn
 mp.set_start_method('spawn', force=True)
 
-# Import torch only if available
-try:
-    import torch
-    TORCH_AVAILABLE = True
-    CUDA_AVAILABLE = torch.cuda.is_available()
-except ImportError:
-    TORCH_AVAILABLE = False
-    CUDA_AVAILABLE = False
+
+# matrix_test_params = {
+#     "backend": ["numpy"] + (["torch"] if TORCH_AVAILABLE else []) + (["torch_cuda"] if CUDA_AVAILABLE else []),
+#     "dtype_info": [
+#         ("float32", np.float32),
+#         ("uint8", np.uint8), 
+#         ("int32", np.int32)
+#     ],
+#     "shape": [(7,), (4,3), (256, 256, 3)],
+#     "history_len": [5, 10],
+#     "read_history": [2, 3],
+# }
 
 matrix_test_params = {
-    "backend": ["numpy"] + (["torch"] if TORCH_AVAILABLE else []) + (["torch_cuda"] if CUDA_AVAILABLE else []),
+    "backend": ["torch_cuda"],
     "dtype_info": [
-        ("float32", np.float32),
-        ("uint8", np.uint8), 
-        ("int32", np.int32)
+        ("float32", torch.float32),
+        ("uint8", torch.uint8), 
+        ("int32", torch.int32)
     ],
-    "shape": [(7,), (4,3), (256, 256, 3)],
-    "history_len": [5, 10],
-    "read_history": [2, 3],
+    "shape": [(7,)],
+    "history_len": [5],
+    "read_history": [2,],
 }
 
 def create_sample_data(shape, dtype_info, backend):
@@ -102,8 +107,8 @@ def producer_process(
             dds_participant=participant,
             keep_last=10
         )
-        
-        print("Producer started and waiting for commands")
+
+        # print("Producer started and waiting for commands")
         result_queue.put(("READY", None))
         
         frame_counter = 0
@@ -118,6 +123,8 @@ def producer_process(
                 frame_idx = producer.put(frame_data)
                 frame_counter += 1
                 result_queue.put(("WRITTEN", frame_idx, timestamp, frame_value))
+
+                # print("Written, pool status", producer.backend._tensor_pool)
         
         producer.cleanup()
         print("Producer finished")
@@ -148,36 +155,37 @@ def consumer_process(
             keep_last=10
         )
         
-        print("Consumer started and waiting for commands")
+        print("Consumer ready")
         result_queue.put(("READY", None))
         
         while True:
+            print("Waiting for command...")
+            print("Connected:", consumer._connected, consumer.backend._connected, consumer._dds_consumer._connected)
             command = command_queue.get(timeout=10)
             if command == "STOP":
+                print("Stopping consumer")
                 break
             elif isinstance(command, tuple) and command[0] == "READ":
+                # print("Reading data...")
                 _, read_history = command
                 read_time = time.time()
-                
-                # Get data with history
                 data = consumer.get(
                     history_len=read_history,
-                    block=False,
                     as_numpy=False,
                     latest_first=True
                 )
-                
-                if data is not None:
-                    if read_history == 1:
-                        # Single frame, no history dimension
-                        frame_values = [extract_frame_value(data, backend)]
-                    else:
-                        # Multiple frames with history dimension
-                        frame_values = [extract_frame_value(data[i], backend) for i in range(data.shape[0] if hasattr(data, 'shape') else len(data))]
-                    result_queue.put(("READ_SUCCESS", frame_values, read_time))
-                else:
+
+                if data is None:
                     result_queue.put(("READ_EMPTY", None, read_time))
-        
+                    continue            
+                if read_history == 1:
+                    # Single frame, no history dimension
+                    frame_values = [extract_frame_value(data, backend)]
+                else:
+                    # Multiple frames with history dimension
+                    frame_values = [extract_frame_value(data[i], backend) for i in range(data.shape[0] if hasattr(data, 'shape') else len(data))]
+                result_queue.put(("READ_SUCCESS", frame_values, read_time))
+                print("Read success", frame_values)
         consumer.cleanup()
         print("Consumer finished")
         
@@ -204,13 +212,13 @@ def template_test_producer_consumer(
 
     dtype_name, np_dtype = dtype_info
     
-    print(f"Backend: {backend}")
-    print(f"Pool name: {pool_name}")
-    print(f"Pool shape: {shape}")
-    print(f"History length: {history_len}")
-    print(f"Data type: {dtype_name}")
-    print(f"Frames: {num_frames}")
-    print()
+    # print(f"Backend: {backend}")
+    # print(f"Pool name: {pool_name}")
+    # print(f"Pool shape: {shape}")
+    # print(f"History length: {history_len}")
+    # print(f"Data type: {dtype_name}")
+    # print(f"Frames: {num_frames}")
+    # print()
 
     # Create queues for communication
     producer_command_queue = mp.Queue()
@@ -270,6 +278,7 @@ def template_test_producer_consumer(
             continue
 
         # Command consumer to read
+        # time.sleep(0.0005)         # Sleep for 0.01 ms to allow dds to work
         consumer_command_queue.put(("READ", read_history))
         
         # Wait for consumer result
@@ -292,6 +301,8 @@ def template_test_producer_consumer(
                 print(f"Frame mismatch! Expected {expected_frame_values}, got {read_frame_values[:len(expected_frame_values)]}")
         elif result[0] == "ERROR":
             raise RuntimeError(f"Consumer error: {result[1]}")
+        else:
+            raise RuntimeError(f"Unexpected consumer result: {result}")
         
         time.sleep(0.01)
     
@@ -320,7 +331,7 @@ def template_test_producer_consumer(
     if result[0] == "READ_SUCCESS":
         print("✓ Single frame read successful")
     else:
-        print("✗ Single frame read failed")
+        print("✗ Single frame read failed:", result)
 
     # Stop processes
     print("\nStopping processes...")

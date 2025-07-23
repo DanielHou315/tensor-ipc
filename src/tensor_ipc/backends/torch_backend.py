@@ -5,11 +5,11 @@ Provides TorchBackend that layers on top of NumPy backend for shared memory,
 with zero-copy tensor views and device conversion support.
 """
 from __future__ import annotations
-from typing import Optional, Any, Union
+from typing import Any
 import numpy as np
 import torch
 
-from ..core.metadata import PoolMetadata, TorchCUDAPoolMetadata
+from ..core.metadata import PoolMetadata
 from .base_backend import HistoryPadStrategy
 from .numpy_backend import NumpyProducerBackend, NumpyConsumerBackend
 
@@ -46,7 +46,7 @@ class TorchProducerBackend(NumpyProducerBackend):
     """
 
     def __init__(self,
-        pool_metadata: Union[PoolMetadata, TorchCUDAPoolMetadata],
+        pool_metadata: PoolMetadata,
         history_pad_strategy: HistoryPadStrategy = "zero",
         force: bool = False
     ):
@@ -115,7 +115,7 @@ class TorchConsumerBackend(NumpyConsumerBackend):
     This backend provides zero-copy tensor views via torch.from_numpy().
     """
     def __init__(self,
-                 pool_metadata: Union[PoolMetadata, TorchCUDAPoolMetadata]):
+                 pool_metadata: PoolMetadata):
         # Store target device and dtype for tensor conversion
         self._target_device = torch.device(pool_metadata.device if hasattr(pool_metadata, 'device') else 'cpu')
         # Initialize NumPy backend - it handles all the shared memory setup
@@ -125,7 +125,7 @@ class TorchConsumerBackend(NumpyConsumerBackend):
         """Connect to the shared tensor pool using NumPy's mmap."""
         # Call parent to connect to the numpy pool
         if self._connected:
-            return False
+            return True
         
         result = super().connect(pool_metadata)
         if result is False:
@@ -138,7 +138,7 @@ class TorchConsumerBackend(NumpyConsumerBackend):
     def _read_indices(self, indices):
         """Read data from the tensor pool at specified indices and convert to torch tensor."""
         # Get numpy data from parent (zero-copy)
-        if not self._connected:
+        if not self._connected or self._tensor_pool is None:
             return None
         
         indices = torch.tensor(indices, device=self._target_device)

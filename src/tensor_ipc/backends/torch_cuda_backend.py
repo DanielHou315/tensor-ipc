@@ -5,9 +5,10 @@ Provides TorchBackend that layers on top of NumPy backend for shared memory,
 with zero-copy tensor views and device conversion support.
 """
 from __future__ import annotations
+import json
 
 from .base_backend import HistoryPadStrategy
-from ..core.metadata import TorchCUDAPoolMetadata
+from ..core.metadata import MetadataCreator, PoolMetadata
 
 # Import torch at module level
 import torch
@@ -26,12 +27,12 @@ class TorchCUDAProducerBackend(TorchProducerBackend):
     """
 
     def __init__(self,
-        pool_metadata: TorchCUDAPoolMetadata,
+        pool_metadata: PoolMetadata,
         history_pad_strategy: HistoryPadStrategy = "zero",
         force=False,        # Not used but kept for compatibility
     ):
-        assert isinstance(pool_metadata, TorchCUDAPoolMetadata), \
-            "pool_metadata must be TorchCUDAPoolMetadata for CUDA backend"
+        assert isinstance(pool_metadata, PoolMetadata), \
+            "pool_metadata must be PoolMetadata for CUDA backend"
         super().__init__(pool_metadata, history_pad_strategy)
 
     # ---------- pool life-cycle -----------------------------------
@@ -39,12 +40,11 @@ class TorchCUDAProducerBackend(TorchProducerBackend):
         """Producer: allocate GPU ring-buffer and write IPC handle to metadata."""
         self._element_shape = tuple(self._pool_metadata.shape)
         self._pool_shape = (self._pool_metadata.history_len,) + self._element_shape
-        
 
         assert self._pool_metadata.dtype_str in TORCH_TYPE_MAP, \
             f"Unsupported dtype: {self._pool_metadata.dtype_str}"
-        assert isinstance(self._pool_metadata, TorchCUDAPoolMetadata), \
-            "pool_metadata must be TorchCUDAPoolMetadata for CUDA backend"
+        assert isinstance(self._pool_metadata, PoolMetadata), \
+            "pool_metadata must be PoolMetadata for CUDA backend"
         
         self._tensor_pool = torch.zeros(
             self._pool_shape,
@@ -53,30 +53,18 @@ class TorchCUDAProducerBackend(TorchProducerBackend):
         )
 
         # Ask PyTorch for an IPC handle to its underlying storage
-        self.ut_storage = self._tensor_pool.untyped_storage()._share_cuda_()
+        self.ut_storage = self._tensor_pool.untyped_storage()
 
         # Extract IPC handle
-        (ipc_dev, ipc_handle, ipc_size, ipc_off_bytes,
-         ref_handle, ref_off, evt_handle, evt_sync) = self.ut_storage
-        
-        # Update metadata with IPC information
-        self._pool_metadata.tensor_size = self._tensor_pool.size()
-        self._pool_metadata.tensor_stride = self._tensor_pool.stride()
-        self._pool_metadata.tensor_offset = self._tensor_pool.storage_offset()
-
-        # CUDA IPC fields from _share_cuda_()
-        self._pool_metadata.storage_device = ipc_dev
-        self._pool_metadata.storage_handle = ipc_handle
-        self._pool_metadata.storage_size_bytes = ipc_size
-        self._pool_metadata.storage_offset_bytes = ipc_off_bytes
-        self._pool_metadata.ref_counter_handle = ref_handle
-        self._pool_metadata.ref_counter_offset = ref_off
-        self._pool_metadata.event_handle = evt_handle
-        self._pool_metadata.event_sync_required = evt_sync
+        metadata_payload_json = MetadataCreator.payload_from_torch_cuda_storage(
+            self._tensor_pool
+        )
+        self._pool_metadata.payload_json = metadata_payload_json
 
     # ---------- cleanup -------------------------------------------
     def cleanup(self):
-        del self._tensor_pool
+        self._lock.close()
+        self._lock.unlink()
         self._tensor_pool = None   # let CUDAStorage ref-count free itself
 
 
@@ -85,11 +73,10 @@ class TorchCUDAConsumerBackend(TorchConsumerBackend):
     Consumer backend for CUDA tensors. Inherits from TorchCConsumerBackend
     to reuse the shared memory and IPC logic.
     """
-    
-    def __init__(self, pool_metadata: TorchCUDAPoolMetadata):
+    def __init__(self, pool_metadata: PoolMetadata):
 
-        assert isinstance(pool_metadata, TorchCUDAPoolMetadata), \
-            "pool_metadata must be TorchCUDAPoolMetadata for CUDA backend"
+        assert isinstance(pool_metadata, PoolMetadata), \
+            "pool_metadata must be PoolMetadata for CUDA backend"
         super().__init__(
             pool_metadata=pool_metadata,
         )
@@ -98,32 +85,54 @@ class TorchCUDAConsumerBackend(TorchConsumerBackend):
         """Consumer: read IPC handle from metadata and attach."""
         if self._connected:
             return True
-        if not isinstance(pool_metadata, TorchCUDAPoolMetadata) or not pool_metadata.is_valid():
+        
+        if not isinstance(pool_metadata, PoolMetadata) or \
+            not MetadataCreator.verify_torch_cuda_payload(pool_metadata):
             print("Invalid pool metadata for CUDA backend")
             print(pool_metadata)
             return False
         # Cache used values
         self._target_device = torch.device(self._pool_metadata.device)
-        self._tensor_pool = rebuild_cuda_tensor(
-            torch.Tensor,
-            tensor_size      = pool_metadata.tensor_size,
-            tensor_stride    = pool_metadata.tensor_stride,
-            tensor_offset    = pool_metadata.tensor_offset,
-            storage_cls      = torch.UntypedStorage,
-            dtype            = TORCH_TYPE_MAP[pool_metadata.dtype_str],
-            requires_grad    = False,
-            storage_device   = pool_metadata.storage_device,
-            storage_handle   = pool_metadata.storage_handle,
-            storage_size_bytes   = pool_metadata.storage_size_bytes,
-            storage_offset_bytes = pool_metadata.storage_offset_bytes,
-            ref_counter_handle   = pool_metadata.ref_counter_handle,
-            ref_counter_offset   = pool_metadata.ref_counter_offset,
-            event_handle         = pool_metadata.event_handle,
-            event_sync_required  = pool_metadata.event_sync_required,
-        )
-        self._connected = True
-        return True
+
+        # Get metadata from payload, at this point it should be verified
+        metadata_dict = json.loads(pool_metadata.payload_json)
+
+        # Fix: Use correct storage class for PyTorch
+        # torch.UntypedStorage is correct for PyTorch >= 1.10
+        storage_cls = getattr(torch, "UntypedStorage", None)
+        if storage_cls is None:
+            # Fallback for older PyTorch versions
+            storage_cls = getattr(torch.storage, "UntypedStorage", None)
+        if storage_cls is None:
+            raise RuntimeError("Could not find UntypedStorage class in torch")
+        try:
+            self._tensor_pool = rebuild_cuda_tensor(
+                torch.Tensor,
+                tensor_size      = metadata_dict['tensor_size'],
+                tensor_stride    = metadata_dict['tensor_stride'],
+                tensor_offset    = metadata_dict['tensor_offset'],
+                storage_cls      = storage_cls,
+                dtype            = TORCH_TYPE_MAP[pool_metadata.dtype_str],
+                requires_grad    = False,
+                storage_device   = metadata_dict['storage_device'],
+                storage_handle   = bytes.fromhex(metadata_dict['storage_handle']),
+                storage_size_bytes   = metadata_dict['storage_size_bytes'],
+                storage_offset_bytes = metadata_dict['storage_offset_bytes'],
+                ref_counter_handle   = bytes.fromhex(metadata_dict['ref_counter_handle']),
+                ref_counter_offset   = metadata_dict['ref_counter_offset'],
+                event_handle         = bytes.fromhex(metadata_dict['event_handle']),
+                event_sync_required  = metadata_dict['event_sync_required'],
+            )
+            self._connected = True
+            return True
+        except Exception as e:
+            # print(f"Failed to connect to CUDA tensor pool: {e}")
+            return False
 
     # ---------- cleanup -------------------------------------------
     def cleanup(self):
-        self._tensor_pool = None   # let CUDAStorage ref-count free itself
+        self._lock.close()
+        self._lock.unlink()
+        # Fix: Only delete _tensor_pool if it exists
+        if hasattr(self, '_tensor_pool'):
+            self._tensor_pool = None   # let CUDAStorage ref-count free itself

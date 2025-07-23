@@ -3,9 +3,12 @@ Native tensor backends for NumPy and PyTorch with DDS-based notifications.
 Each backend creates a shared tensor pool with shape (history_len, *sample_shape) and shared metadata.
 """
 from __future__ import annotations
-from typing import Optional, Any, Union, Literal
+from typing import Optional, Any, Literal
 from abc import ABC, abstractmethod
-from ..core.metadata import PoolMetadata, TorchCUDAPoolMetadata
+
+from tensor_ipc.core.mplock import MPLock
+from ..core.metadata import PoolMetadata
+from weakref import finalize
 
 # History padding strategies
 HistoryPadStrategy = Literal["zero", "fill"]
@@ -13,7 +16,7 @@ HistoryPadStrategy = Literal["zero", "fill"]
 class TensorProducerBackend(ABC):
     """Base class for tensor producer backends that publish data via DDS notifications."""
     def __init__(self,
-        pool_metadata: Union[PoolMetadata, TorchCUDAPoolMetadata],
+        pool_metadata: PoolMetadata,
         history_pad_strategy: HistoryPadStrategy = "zero",
         force: bool = False,
     ):
@@ -23,6 +26,9 @@ class TensorProducerBackend(ABC):
         assert history_pad_strategy in ["zero", "fill"], \
             f"Invalid history_pad_strategy: {history_pad_strategy}. Must be 'zero' or 'fill'."
         self._history_pad_strategy = history_pad_strategy
+
+        # Lock for thread-safe access
+        self._lock = MPLock(f"tensoripc_{self._pool_metadata.name}", create=True)
 
         # Storage for the single tensor pool with shape (history, *sample_shape)
         self._tensor_pool: Optional[Any] = None
@@ -35,6 +41,9 @@ class TensorProducerBackend(ABC):
         self._init_tensor_pool(force=force)
         if self._history_pad_strategy == "zero":
             self._initialize_history_padding(fill=0)
+
+        # Finalizer to clean up resources
+        self._f = finalize(self, self.cleanup)
 
     @abstractmethod
     def _init_tensor_pool(self, force=False) -> None:
@@ -52,11 +61,11 @@ class TensorProducerBackend(ABC):
         self._current_frame_index = (self._current_frame_index + 1) % self._pool_metadata.history_len
 
         # Write data to the current slot
-        self._write_data(data, self._current_frame_index)
-
-        # Pad history if strategy is "fill"
-        if not self._history_initialized and self._history_pad_strategy == "fill":
-            self._initialize_history_padding()
+        with self._lock.write_lock():
+            self._write_data(data, self._current_frame_index)
+            # Pad history if strategy is "fill"
+            if not self._history_initialized and self._history_pad_strategy == "fill":
+                self._initialize_history_padding()
 
         return self._current_frame_index
 
@@ -66,7 +75,7 @@ class TensorProducerBackend(ABC):
         pass
 
     @property
-    def metadata(self) -> Union[PoolMetadata, TorchCUDAPoolMetadata]:
+    def metadata(self) -> PoolMetadata:
         """Get the pool metadata."""
         return self._pool_metadata
 
@@ -80,18 +89,19 @@ class TensorProducerBackend(ABC):
         """Get the maximum history length."""
         return self._pool_metadata.history_len
 
-    @abstractmethod
     def cleanup(self) -> None:
         """Clean up backend resources."""
-        pass
+        self._lock.close()
+        self._lock.unlink()
 
 class TensorConsumerBackend(ABC):
     """Base class for tensor consumer backends that receive DDS notifications."""
     
     def __init__(self,
-        metadata: Union[PoolMetadata, TorchCUDAPoolMetadata], 
+        metadata: PoolMetadata, 
     ):
         self._pool_metadata = metadata
+        self._lock = MPLock(f"tensoripc_{self._pool_metadata.name}", create=False)
 
         # Storage for the single tensor pool with shape (history, *sample_shape)
         self._tensor_pool: Optional[Any] = None
@@ -122,9 +132,14 @@ class TensorConsumerBackend(ABC):
         """
         if not self._connected:
             return None
-        data = self._read_indices(indices)
+        try:
+            with self._lock.read_lock():
+                data = self._read_indices(indices)
+        except Exception as e:
+            # print(f"Error reading indices {indices}: {e}")
+            return None
         if as_numpy:
-           return self._to_numpy(data)
+           return self.to_numpy(data)
         return data
     
     @abstractmethod
@@ -153,7 +168,7 @@ class TensorConsumerBackend(ABC):
         self._latest_data_frame_index = latest_index
     
     @property
-    def metadata(self) -> Optional[Union[PoolMetadata, TorchCUDAPoolMetadata]]:
+    def metadata(self) -> Optional[PoolMetadata]:
         """Get the pool metadata."""
         return self._pool_metadata
 
@@ -178,7 +193,6 @@ class TensorConsumerBackend(ABC):
         self.cleanup()
         self._tensor_pool = None
     
-    @abstractmethod 
     def cleanup(self) -> None:
         """Clean up backend resources."""
-        pass
+        self._lock.close()

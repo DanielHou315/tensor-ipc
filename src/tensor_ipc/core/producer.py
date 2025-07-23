@@ -32,6 +32,7 @@ class TensorProducer:
             force=True,
         )
 
+        # self._pool_metadata = self.backend.metadata
         self._pool_metadata = self.backend.metadata
 
         # DDS producer for notifications
@@ -78,7 +79,7 @@ class TensorProducer:
         
         # Write data using the backend's write method
         idx = self.backend.write(data)
-
+        
         # Publish progress notification
         message = PoolProgressMessage(
             pool_name=self._pool_metadata.name,

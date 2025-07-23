@@ -16,7 +16,6 @@ __email__ = "houhd@umich.edu"
 # from .core.producer import TensorProducer
 from .core.metadata import (
     PoolMetadata,
-    TorchCUDAPoolMetadata,
     MetadataCreator
 )
 

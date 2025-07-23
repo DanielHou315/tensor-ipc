@@ -1,4 +1,5 @@
-from typing import Optional, Union, Type, Callable
+from typing import Optional, Union, Type, Callable, List
+
 from time import perf_counter
 from cyclonedds.domain import DomainParticipant
 from cyclonedds.pub import DataWriter
@@ -12,7 +13,6 @@ from cyclonedds.qos import Qos, Policy
 from .metadata import (
     PoolProgressMessage,
     PoolMetadata,
-    TorchCUDAPoolMetadata,
 )
 
 metadata_qos = Qos(
@@ -46,10 +46,7 @@ def is_topic_published(topic_name, domain_id: int = 0) -> bool:
 class DDSProducer:
     def __init__(self, 
         topic_name: str, 
-        metadata_msg: Union[
-            PoolMetadata,
-            TorchCUDAPoolMetadata,
-        ],
+        metadata_msg: PoolMetadata,
         dds_participant: DomainParticipant|None=None,
         keep_last: int = 10
     ):
@@ -96,7 +93,7 @@ class DDSProducer:
 class DDSConsumer:
     def __init__(self, 
         topic_name: str, 
-        metadata_type: Type[Union[PoolMetadata, TorchCUDAPoolMetadata]],
+        metadata_type: Type[PoolMetadata],
         keep_last: int = 10, 
         dds_participant: DomainParticipant|None = None,
         new_data_callback=None,
@@ -141,11 +138,12 @@ class DDSConsumer:
 
     def connect(self):
         if self._connected:
-            return
+            return True
         try:
-            metadata = self._metadata_reader.take_next()
+            metadata = self._metadata_reader.take_one(timeout=duration(milliseconds=50))
             if metadata is None:
-                return
+                print(f"No metadata available for topic '{self._topic_name}'")
+                return True
             self._metadata = metadata
             self._connected = True
         except Exception as e:
@@ -162,7 +160,7 @@ class DDSConsumer:
         # Try reading from pool, and if fails, attempt to reconnect
         return self._progress_reader.take_one(timeout=duration(milliseconds=timeout))
 
-    def read_latest_progress(self, max_n: int = 1) -> Optional[PoolProgressMessage]:
+    def read_latest_progress(self, max_n: int = 1) -> Optional[List[PoolProgressMessage]]:
         """Read progress messages from the DDS.
 
         Args:

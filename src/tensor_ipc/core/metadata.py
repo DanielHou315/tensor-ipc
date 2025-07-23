@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import os
 from cyclonedds.idl import IdlStruct
 from cyclonedds.idl.types import sequence
-from typing import ByteString
+import json
 
 @dataclass
 class PoolProgressMessage(IdlStruct):
@@ -30,6 +30,9 @@ class PoolMetadata(IdlStruct):
     shm_name: str = ""  # Shared memory identifier
     creator_pid: int = 0
 
+    # Extra payload json
+    payload_json: str = ""
+
     def __eq__(self, other):
         if not isinstance(other, PoolMetadata):
             return NotImplemented
@@ -42,69 +45,97 @@ class PoolMetadata(IdlStruct):
             self.device == other.device and
             self.element_size == other.element_size and
             self.total_size == other.total_size and
-            self.shm_name == other.shm_name and
-            self.creator_pid == other.creator_pid
+            self.shm_name == other.shm_name
+            # self.creator_pid == other.creator_pid     # Skip PID comparison for equality
         )
 
-@dataclass
-class TorchCUDAPoolMetadata(PoolMetadata):
-    """Specialized metadata for CUDA tensors."""
-    device: str = "cuda"
-    
-    # Tensor reconstruction fields
-    tensor_size: sequence[int] = ()
-    tensor_stride: sequence[int] = ()
-    tensor_offset: int = 0
-    
-    # CUDA IPC fields from _share_cuda_()
-    storage_device: int = 0
-    storage_handle: ByteString = b''
-    storage_size_bytes: int = 0
-    storage_offset_bytes: int = 0
-    ref_counter_handle: ByteString = b''
-    ref_counter_offset: int = 0
-    event_handle: ByteString = b''
-    event_sync_required: bool = True
 
-    def __eq__(self, other):
-        if not isinstance(other, TorchCUDAPoolMetadata):
-            return NotImplemented
-        # Compare base fields but exclude runtime-specific handles
-        base_equal = (
-            self.name == other.name and
-            self.shape == other.shape and
-            self.dtype_str == other.dtype_str and
-            self.backend_type == other.backend_type and
-            self.history_len == other.history_len and
-            self.device == other.device and
-            self.element_size == other.element_size and
-            self.total_size == other.total_size and
-            self.tensor_size == other.tensor_size and
-            self.tensor_stride == other.tensor_stride and
-            self.tensor_offset == other.tensor_offset and
-            self.storage_device == other.storage_device and
-            self.storage_size_bytes == other.storage_size_bytes and
-            self.storage_offset_bytes == other.storage_offset_bytes and
-            self.ref_counter_offset == other.ref_counter_offset and
-            self.event_sync_required == other.event_sync_required
-        )
-        # Note: We don't compare handles as they are runtime-specific
-        return base_equal
-
-    def is_valid(self) -> bool:
-        """
-        Check if metadata is valid for reconstruction. 
-        """
-        return len(self.storage_handle) > 0 \
-            and len(self.ref_counter_handle) > 0 \
-            and len(self.event_handle) > 0 \
-
+"""
+Acts as a namespace for metadata creation utilities.
+"""
 class MetadataCreator:
+    @staticmethod
+    def payload_from_torch_cuda_storage(tensor) -> str:
+        import torch
+        assert isinstance(tensor, torch.Tensor), \
+            "tensor must be an instance of torch.Tensor"
+        untyped_storage_inst = tensor.untyped_storage()
+        # Get CUDA IPC information
+        (ipc_dev, ipc_handle, ipc_size, ipc_off_bytes,
+        ref_handle, ref_off, evt_handle, evt_sync) = untyped_storage_inst._share_cuda_()
+
+        payload_json = json.dumps({
+            'tensor_size': tensor.size(),
+            'tensor_stride': tensor.stride(),
+            'tensor_offset': tensor.storage_offset(),
+            "storage_device": ipc_dev,
+            "storage_handle": ipc_handle.hex(),
+            "storage_size_bytes": ipc_size,
+            "storage_offset_bytes": ipc_off_bytes,
+            "ref_counter_handle": ref_handle.hex(),
+            "ref_counter_offset": ref_off,
+            "event_handle": evt_handle.hex(),
+            "event_sync_required": evt_sync
+        })
+        return payload_json
+
+    @staticmethod
+    def verify_torch_cuda_payload(metadata: PoolMetadata) -> bool:
+        """Verify that the payload JSON in metadata contains all required keys."""
+        if not metadata.payload_json:
+            return False
+        try:
+            payload = json.loads(metadata.payload_json)
+            assert_payload_keys = [
+                'tensor_size', 
+                'tensor_stride', 
+                'tensor_offset', 
+                'storage_device', 
+                'storage_handle', 
+                'storage_size_bytes', 
+                'storage_offset_bytes', 
+                'ref_counter_handle', 
+                'ref_counter_offset', 
+                'event_handle', 
+                'event_sync_required'
+            ]
+            for key in assert_payload_keys:
+                assert key in payload, f"Missing key in payload: {key}"
+            
+            # Check each type   
+            assert len(payload['tensor_size']) > 0, "tensor_size must be a non-empty list"
+            assert len(payload['tensor_stride']) > 0, "tensor_stride must be a non-empty list"
+            assert isinstance(payload['tensor_offset'], int), "tensor_offset must be an integer"
+            assert isinstance(payload['storage_device'], int), "storage_device must be an integer"
+            assert isinstance(payload['storage_handle'], str), "storage_handle must be a string"
+            bytes.fromhex(payload['storage_handle'])  # Verify it's valid hex
+            assert isinstance(payload['storage_size_bytes'], int), "storage_size_bytes must be an integer"
+            assert isinstance(payload['storage_offset_bytes'], int), "storage_offset_bytes must be an integer"
+            assert isinstance(payload['ref_counter_handle'], str), "ref_counter_handle must be a string"
+            bytes.fromhex(payload['ref_counter_handle'])  # Verify it's valid hex
+            assert isinstance(payload['ref_counter_offset'], int), "ref_counter_offset must be an integer"
+            assert isinstance(payload['event_handle'], str), "event_handle must be a string"
+            bytes.fromhex(payload['event_handle'])  # Verify it's valid hex
+            assert isinstance(payload['event_sync_required'], bool), "event_sync_required must be a boolean"
+            return True
+        except json.JSONDecodeError:
+            print("Invalid JSON in payload:", metadata.payload_json)
+            return False
+        except (AssertionError, TypeError) as e:
+            print("Invalid payload element:", e)
+            return False
+        except Exception as e:
+            print("Unexpected error during payload verification:", e)
+        return False
+
+    """
+    From sample functions
+    """
     @staticmethod
     def from_numpy_sample(name: str, sample_data, history_len: int = 1) -> 'PoolMetadata':
         """Create PoolMetadata from a sample tensor/array."""
         import numpy as np
-    
+
         if not isinstance(sample_data, np.ndarray):
             raise TypeError(f"Sample data must be a numpy array, got {type(sample_data)}")
 
@@ -125,7 +156,7 @@ class MetadataCreator:
             shm_name=f"tensoripc_{name}",
             creator_pid=os.getpid()
         )
-    
+
     @staticmethod
     def from_torch_sample(name: str, sample_data, history_len: int = 1) -> 'PoolMetadata':
         """Create PoolMetadata from a sample tensor/array."""
@@ -157,15 +188,15 @@ class MetadataCreator:
             shm_name=f"tensoripc_{name}",
             creator_pid=os.getpid()
         )
-    
+
     @classmethod
     def from_torch_cuda_sample(cls,
         name: str,
         sample_data,
         history_len: int = 1,
-        untyped_storage_inst = None,
-    ) -> 'TorchCUDAPoolMetadata':
-        """Create TorchCUDAPoolMetadata from a sample CUDA tensor."""
+        tensor_pool = None,
+    ) -> 'PoolMetadata':
+        """Create PoolMetadata from a sample CUDA tensor."""
         import torch
         import os
         
@@ -182,26 +213,24 @@ class MetadataCreator:
         # Calculate total size for shared memory
         total_size = int(torch.prod(torch.tensor(shape))) * element_size * history_len
         
-        if untyped_storage_inst is None:
-            return TorchCUDAPoolMetadata(
+        if tensor_pool is None:
+            return PoolMetadata(
                 name=name,
                 shape=shape,
                 dtype_str=dtype_str,
-                backend_type='torch',
-                device=f'cuda',
+                backend_type='torch_cuda',
+                device='cuda',
                 history_len=history_len,
                 element_size=element_size,
                 total_size=total_size,
-                shm_name=f"pool_{name}_{os.getpid()}",
+                shm_name=f"pool_{name}",
                 creator_pid=os.getpid()
             )
 
-        assert isinstance(untyped_storage_inst, torch.UntypedStorage), \
-            "untyped_storage_inst must be an instance of torch.UntypedStorage"
-        # Get CUDA IPC information
-        (ipc_dev, ipc_handle, ipc_size, ipc_off_bytes,
-        ref_handle, ref_off, evt_handle, evt_sync) = untyped_storage_inst._share_cuda_()
-        return TorchCUDAPoolMetadata(
+        payload_json = cls.payload_from_torch_cuda_storage(tensor_pool)
+        ipc_dev = json.loads(payload_json).get("ipc_dev", 0)
+
+        return PoolMetadata(
             name=name,
             shape=shape,
             dtype_str=dtype_str,
@@ -210,42 +239,27 @@ class MetadataCreator:
             history_len=history_len,
             element_size=element_size,
             total_size=total_size,
-            shm_name=f"pool_{name}_{os.getpid()}",
+            shm_name=f"pool_{name}",
             creator_pid=os.getpid(),
-            
-            # Tensor reconstruction fields
-            tensor_size=tuple(sample_data.size()),
-            tensor_stride=tuple(sample_data.stride()),
-            tensor_offset=sample_data.storage_offset(),
-            
-            # CUDA IPC fields
-            storage_device=ipc_dev,
-            storage_handle=ipc_handle,
-            storage_size_bytes=ipc_size,
-            storage_offset_bytes=ipc_off_bytes,
-            ref_counter_handle=ref_handle,
-            ref_counter_offset=ref_off,
-            event_handle=evt_handle,
-            event_sync_required=evt_sync
+            payload_json=payload_json,
         )
 
-    
-    @staticmethod
-    def from_sample(name, data, history_len, backend):
+    @classmethod
+    def from_sample(cls, name, data, history_len, backend):
         if backend == "numpy":
-            return MetadataCreator.from_numpy_sample(
+            return cls.from_numpy_sample(
                 name=name,
                 sample_data=data,
                 history_len=history_len
             )
         elif backend == "torch":
-            return MetadataCreator.from_torch_sample(
+            return cls.from_torch_sample(
                 name=name,
                 sample_data=data,
                 history_len=history_len
             )
         elif backend == "torch_cuda":
-            return MetadataCreator.from_torch_cuda_sample(
+            return cls.from_torch_cuda_sample(
                 name=name,
                 sample_data=data,
                 history_len=history_len

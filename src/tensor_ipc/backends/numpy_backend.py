@@ -4,7 +4,7 @@ NumPy backend for Victor Python IPC.
 Provides NumpyBackend for CPU-based numpy arrays with zero-copy shared memory communication.
 """
 from __future__ import annotations
-from typing import Union, Any
+from typing import Any
 import numpy as np
 import mmap
 import posix_ipc
@@ -14,7 +14,7 @@ from .base_backend import (
     TensorConsumerBackend,
     HistoryPadStrategy
 )
-from ..core.metadata import PoolMetadata, TorchCUDAPoolMetadata
+from ..core.metadata import PoolMetadata
 
 NUMPY_TYPE_MAP = {
     "float32": np.float32,
@@ -33,12 +33,12 @@ class NumpyProducerBackend(TensorProducerBackend):
     Native NumPy backend with single tensor pool and history padding
     
     args:
-        pool_metadata: PoolMetadata or TorchCUDAPoolMetadata containing shared memory metadata
+        pool_metadata: PoolMetadata containing shared memory metadata
         history_pad_strategy: Strategy for padding history ("zero" or "fill")
         force: If True, force re-creation of shared memory even if it already exists
     """
     def __init__(self, 
-        pool_metadata: Union[PoolMetadata, TorchCUDAPoolMetadata],
+        pool_metadata: PoolMetadata,
         history_pad_strategy: HistoryPadStrategy = "zero",
         force: bool = False,
     ):
@@ -119,6 +119,7 @@ class NumpyProducerBackend(TensorProducerBackend):
         Properly destroy the shared memory and memory map.
         Call this when you no longer need the pool.
         """
+        super().cleanup()
         # 1. Close the mmap
         if hasattr(self, "_shared_mmap") and self._shared_mmap is not None:
             try:
@@ -150,10 +151,10 @@ class NumpyConsumerBackend(TensorConsumerBackend):
     Native NumPy backend for consuming shared memory pools.
     
     args:
-        pool_metadata: PoolMetadata or TorchCUDAPoolMetadata containing shared memory metadata
+        pool_metadata: PoolMetadata containing shared memory metadata
     """
     def __init__(self,
-        pool_metadata: Union[PoolMetadata, TorchCUDAPoolMetadata],
+        pool_metadata: PoolMetadata,
     ):
         self._shared_memory = None
         self._shared_mmap = None
@@ -163,11 +164,13 @@ class NumpyConsumerBackend(TensorConsumerBackend):
         """Connect to existing NumPy tensor pool."""
         # Consumer connects to existing shared memory
         if self._connected:
-            return False
+            print("Already connected to tensor pool")
+            return True
         
         self._metadata = pool_metadata
-        assert isinstance(pool_metadata, (PoolMetadata, TorchCUDAPoolMetadata)), \
-            f"Expected PoolMetadata or TorchCUDAPoolMetadata, got {type(pool_metadata)}"
+        if not isinstance(pool_metadata,PoolMetadata):
+            print("Invalid pool metadata for NumPy backend")
+            return False
         self._pool_shape = (pool_metadata.history_len,) + tuple(pool_metadata.shape)
 
         # Actually connect to shared memory
@@ -177,9 +180,10 @@ class NumpyConsumerBackend(TensorConsumerBackend):
         self._shared_memory.close_fd()  # Close fd, keep shared memory object
 
         # Fix: Use NUMPY_TYPE_MAP instead of string dtype
-        assert pool_metadata.dtype_str in NUMPY_TYPE_MAP, \
-            f"Unsupported dtype: {pool_metadata.dtype_str}. Supported types: {list(NUMPY_TYPE_MAP.keys())}"
-        
+        if pool_metadata.dtype_str not in NUMPY_TYPE_MAP:
+            print(f"Unsupported dtype: {pool_metadata.dtype_str}. Supported types: {list(NUMPY_TYPE_MAP.keys())}")
+            return False
+
         self._tensor_pool = np.ndarray(
             self._pool_shape,
             dtype=NUMPY_TYPE_MAP[pool_metadata.dtype_str],
@@ -214,6 +218,7 @@ class NumpyConsumerBackend(TensorConsumerBackend):
         Properly destroy the shared memory and memory map.
         Call this when you no longer need the pool.
         """
+        super().cleanup()
         # 1. Close the mmap
         if hasattr(self, "_shared_mmap") and self._shared_mmap is not None:
             try:

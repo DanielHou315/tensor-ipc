@@ -84,10 +84,10 @@ class TensorConsumer:
 
     def get(self, 
         history_len: int = 1,
-        block: bool = False, 
         as_numpy: bool = False,
         latest_first: bool = True,
-        timeout: float = 0.1
+        # block: bool = False, 
+        # timeout: float = 0.1
     ) -> Optional[Any]:
         """
         Get latest tensor data from the pool. Returns None if backend not connected yet.
@@ -102,22 +102,28 @@ class TensorConsumer:
         """
         # Check connection
         if not self._connected:
-            self._connect()
-            if not self._connected:
+            connect_status = self._connect(_debug=True)
+            if not connect_status:
+                # print(f"Failed to connect to tensor pool: {self._pool_metadata.name}")
                 return None
-        
+        print("Already connected to tensor pool:", self._pool_metadata.name)
+
         # If blocking, wait for next progress message
-        if block:
-            progress = self._dds_consumer.read_next_progress(timeout=int(timeout * 1000))
-            if progress is None:
-                return None
+        # This conflicts with progress update, so we don't implement for now
+        # if block:
+        #     progress = self._dds_consumer.read_next_progress(timeout=int(timeout * 1000))
+        #     if progress is None:
+        #         return None
+
         # Read latest data from backend
         indices = np.arange(
             self.backend.current_latest_index, 
             self.backend.current_latest_index - history_len, -1
         ) % self.backend.max_history_len
+        print(f"Reading indices: {indices} from pool {self._pool_metadata.name}")
         data = self.backend.read(indices, as_numpy=as_numpy)
         if data is None:
+            # print("No data available in tensor pool:", self._pool_metadata.name)
             return None
         
         # reverse data if latest_first is False
@@ -126,31 +132,44 @@ class TensorConsumer:
             data = data[::-1]
         return data
 
-    def _connect(self):
+    def _connect(self, _debug=False):
         """Connect to the tensor pool and initialize the backend."""
         if self._connected:
-            return
+            if _debug:
+                print("Already connected to tensor pool:", self._pool_metadata.name)
+            return True
         
         # Call connection
         res = self._dds_consumer.connect()
         if not res:
-            print(f"Failed to connect to DDS for pool '{self._pool_metadata.name}'")
-            return
+            if _debug:
+                print(f"Failed to connect to DDS for pool '{self._pool_metadata.name}'")
+            return False
         
-        # Otherwise, backend is connected
+        # Otherwise, validate metadata
         recv_pool_metadata = self._dds_consumer.metadata
         if recv_pool_metadata is None \
             or not (recv_pool_metadata == self._pool_metadata):
-            print(f"Received metadata does not match expected for pool '{self._pool_metadata.name}'")
-            return
+            assert False, \
+                [
+                    f"Received metadata does not match expected for pool '{self._pool_metadata.name}'",
+                    f"Expected: {self._pool_metadata}, Received: {recv_pool_metadata}"
+                ]
         
         # Still update since IPC handle may be different for CUDA
+        print("Connecting pool with valid metadata")
         self._pool_metadata = recv_pool_metadata
-        self.backend.connect(self._pool_metadata)
-
+        res = self.backend.connect(self._pool_metadata)
+        print(self.backend, res)
+        if res is False:
+            if _debug:
+                print(f"Failed to connect backend for pool '{self._pool_metadata.name}'")
+            return False
+        
         # Update progress
         with self._connection_lock:
             self._connected = True
+        return self._connected
 
     def _on_new_progress(self, data_reader):
         """Handle new progress notification from DDS."""
@@ -158,16 +177,19 @@ class TensorConsumer:
             self._connect()
             if not self._connected:
                 return
-            
+            print("Connection established to tensor pool:", self._pool_metadata.name)
+
+        # print("New data available in tensor pool:", self._pool_metadata.name)
+
         # Update latest index
         with self._update_latest_index_lock:
-            self.backend.update_frame_index(data_reader.read(N=1)[-1].latest_index)
+            self.backend.update_frame_index(data_reader.take_one().latest_frame)
+            # print(f"Latest index updated to {self.backend.current_latest_index}")
         
         # Call user callback if registered
         if callable(self._on_new_data_callback):
             data = self.get(
                 history_len=1, 
-                block=False, 
                 as_numpy=False, 
                 latest_first=True
             )
@@ -177,7 +199,7 @@ class TensorConsumer:
         """Handle connection loss notification from DDS."""
         if not self._connected:
             return
-        print(f"Connection to tensor pool '{self._pool_metadata.name}' lost.")
+        # print(f"Connection to tensor pool '{self._pool_metadata.name}' lost.")
         with self._connection_lock:
             self.backend.cleanup()
             self._connected = False
@@ -192,7 +214,7 @@ class TensorConsumer:
             return
         try:
             self.backend.cleanup()
-        except Exception as e:
+        except Exception:
             pass
         finally:
             self._cleaned_up = True

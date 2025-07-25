@@ -78,7 +78,7 @@ class DDSProducer:
 
     def _publish_metadata(self):
         """Publish metadata to the DDS."""
-        if perf_counter() - self._metadata_heartbeat > 1.0:
+        if perf_counter() - self._metadata_heartbeat > 0.5:
             self._metadata_writer.write(self._metadata)
             self._metadata_heartbeat = perf_counter()
 
@@ -140,17 +140,20 @@ class DDSConsumer:
         if self._connected:
             return True
         try:
-            metadata = self._metadata_reader.take_one(timeout=duration(milliseconds=50))
+            metadata = self._metadata_reader.take_next()
             if metadata is None:
                 print(f"No metadata available for topic '{self._topic_name}'")
-                return True
+                return False
             self._metadata = metadata
             self._connected = True
         except Exception as e:
-            print(f"Error connecting to DDS: {e}")
+            import traceback
+            print("Error connecting to DDS with error:")
+            traceback.print_exc()          # full stack trace
+            exit(1)
         return self._connected
 
-    def read_next_progress(self, timeout=100):
+    def read_next_progress(self, timeout=20):
         # Attempt re-connection if not connected
         if not self._connected:
             self.connect()

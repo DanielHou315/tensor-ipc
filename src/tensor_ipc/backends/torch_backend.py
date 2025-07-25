@@ -10,8 +10,14 @@ import numpy as np
 import torch
 
 from ..core.metadata import PoolMetadata
-from .base_backend import HistoryPadStrategy
-from .numpy_backend import NumpyProducerBackend, NumpyConsumerBackend
+from .base_backend import (
+    TensorBackendMixin, 
+    HistoryPadStrategy
+)
+from .numpy_backend import (
+    NumpyProducerBackend,
+    NumpyConsumerBackend
+)
 
 # Type mappings between PyTorch and NumPy
 TORCH_TO_NP_DICT = {
@@ -36,6 +42,20 @@ TORCH_TYPE_MAP = {
     "bool": torch.bool,
 }
 
+class TorchBackendMixin(TensorBackendMixin):
+    @classmethod
+    def to_numpy(cls, data):
+        """Convert data to NumPy array if necessary."""
+        if isinstance(data, torch.Tensor):
+            return data.detach().cpu().numpy()
+        return np.array(data)
+
+    @classmethod
+    def from_numpy(cls, data: np.ndarray) -> torch.Tensor:
+        """Convert NumPy array to PyTorch tensor."""
+        if isinstance(data, np.ndarray):
+            return torch.from_numpy(data)
+        raise TypeError(f"Expected np.ndarray, got {type(data)}")
 
 class TorchProducerBackend(NumpyProducerBackend):
     """
@@ -44,7 +64,7 @@ class TorchProducerBackend(NumpyProducerBackend):
     This backend uses NumPy's POSIX shared memory for the underlying storage
     and provides zero-copy tensor views via torch.from_numpy().
     """
-
+    mixin = TorchBackendMixin
     def __init__(self,
         pool_metadata: PoolMetadata,
         history_pad_strategy: HistoryPadStrategy = "zero",
@@ -114,6 +134,7 @@ class TorchConsumerBackend(NumpyConsumerBackend):
     
     This backend provides zero-copy tensor views via torch.from_numpy().
     """
+    mixin = TorchBackendMixin
     def __init__(self,
                  pool_metadata: PoolMetadata):
         # Store target device and dtype for tensor conversion
@@ -144,22 +165,6 @@ class TorchConsumerBackend(NumpyConsumerBackend):
         indices = torch.tensor(indices, device=self._target_device)
         tensor_slice = self._tensor_pool[indices]
         return tensor_slice
-
-    def to_numpy(self, data):
-        """Convert torch tensor to NumPy array."""
-        if isinstance(data, torch.Tensor):
-            # Move to CPU if needed and convert to numpy
-            if data.device.type != "cpu":
-                data = data.cpu()
-            return data.detach().numpy()
-        raise TypeError(f"Expected torch.Tensor, got {type(data)}")
-    
-    def from_numpy(self, data: np.ndarray) -> torch.Tensor:
-        """Convert NumPy array to torch tensor."""
-        if isinstance(data, np.ndarray):
-            # Convert numpy array to torch tensor
-            return torch.from_numpy(data).to(self._target_device)
-        raise TypeError(f"Expected np.ndarray, got {type(data)}")
 
     def cleanup(self) -> None:
         super().cleanup()

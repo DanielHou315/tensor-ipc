@@ -1,0 +1,1 @@
+{"pool_name": "test_pool_torch_cuda_1753451554768", "shape": [1920, 1080, 3], "dtype_info": "int32", "backend": "torch_cuda", "history_len": 20, "read_history": 2, "num_frames": 50}

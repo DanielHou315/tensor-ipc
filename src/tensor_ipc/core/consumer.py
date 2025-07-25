@@ -72,8 +72,8 @@ class TensorConsumer:
         pool_metadata = MetadataCreator.from_sample(
             name=pool_name,
             data=sample,
+            backend=backend_type,
             history_len=history_len,
-            backend=backend_type
         )
         return cls(
             pool_metadata=pool_metadata,
@@ -86,8 +86,6 @@ class TensorConsumer:
         history_len: int = 1,
         as_numpy: bool = False,
         latest_first: bool = True,
-        # block: bool = False, 
-        # timeout: float = 0.1
     ) -> Optional[Any]:
         """
         Get latest tensor data from the pool. Returns None if backend not connected yet.
@@ -102,25 +100,18 @@ class TensorConsumer:
         """
         # Check connection
         if not self._connected:
-            connect_status = self._connect(_debug=True)
+            connect_status = self._connect()
             if not connect_status:
                 # print(f"Failed to connect to tensor pool: {self._pool_metadata.name}")
                 return None
-        print("Already connected to tensor pool:", self._pool_metadata.name)
-
-        # If blocking, wait for next progress message
-        # This conflicts with progress update, so we don't implement for now
-        # if block:
-        #     progress = self._dds_consumer.read_next_progress(timeout=int(timeout * 1000))
-        #     if progress is None:
-        #         return None
+        # print("Already connected to tensor pool:", self._pool_metadata.name)
 
         # Read latest data from backend
         indices = np.arange(
             self.backend.current_latest_index, 
             self.backend.current_latest_index - history_len, -1
         ) % self.backend.max_history_len
-        print(f"Reading indices: {indices} from pool {self._pool_metadata.name}")
+        # print(f"Reading indices: {indices} from pool {self._pool_metadata.name}")
         data = self.backend.read(indices, as_numpy=as_numpy)
         if data is None:
             # print("No data available in tensor pool:", self._pool_metadata.name)
@@ -157,10 +148,11 @@ class TensorConsumer:
                 ]
         
         # Still update since IPC handle may be different for CUDA
-        print("Connecting pool with valid metadata")
+        # print("Connecting pool with valid metadata")
+        # print("Attempting to connect with", self.backend, self._connected)
         self._pool_metadata = recv_pool_metadata
         res = self.backend.connect(self._pool_metadata)
-        print(self.backend, res)
+        # print("Connected backend:", self.backend, "Result:", res)
         if res is False:
             if _debug:
                 print(f"Failed to connect backend for pool '{self._pool_metadata.name}'")
@@ -177,7 +169,7 @@ class TensorConsumer:
             self._connect()
             if not self._connected:
                 return
-            print("Connection established to tensor pool:", self._pool_metadata.name)
+            # print("Connection established to tensor pool:", self._pool_metadata.name)
 
         # print("New data available in tensor pool:", self._pool_metadata.name)
 
@@ -210,7 +202,9 @@ class TensorConsumer:
 
     def cleanup(self):
         """Clean up all resources used by the consumer."""
-        if self._cleaned_up or self.backend is None:
+        if not hasattr(self, "_cleaned_up") \
+            or not self._cleaned_up \
+            or self.backend is None:
             return
         try:
             self.backend.cleanup()

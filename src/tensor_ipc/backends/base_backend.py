@@ -6,15 +6,33 @@ from __future__ import annotations
 from typing import Optional, Any, Literal
 from abc import ABC, abstractmethod
 
-from tensor_ipc.core.mplock import MPLock
+from tensor_ipc.core.mplock import PoolFrameLocks
 from ..core.metadata import PoolMetadata
 from weakref import finalize
 
 # History padding strategies
 HistoryPadStrategy = Literal["zero", "fill"]
 
+
+class TensorBackendMixin(ABC):
+    """Base class for tensor backends that manage shared tensor pools."""
+    
+    @classmethod
+    def to_numpy(cls, data):
+        """Convert data to NumPy array if necessary."""
+        # This method should be implemented by subclasses to handle specific conversion logic
+        raise NotImplementedError("Subclasses must implement _to_numpy method")
+    
+    @classmethod
+    def from_numpy(cls, data):
+        """Convert NumPy array to backend-specific tensor."""
+        # This method should be implemented by subclasses to handle specific conversion logic
+        raise NotImplementedError("Subclasses must implement from_numpy method")
+
 class TensorProducerBackend(ABC):
     """Base class for tensor producer backends that publish data via DDS notifications."""
+    mixin = TensorBackendMixin
+
     def __init__(self,
         pool_metadata: PoolMetadata,
         history_pad_strategy: HistoryPadStrategy = "zero",
@@ -28,7 +46,10 @@ class TensorProducerBackend(ABC):
         self._history_pad_strategy = history_pad_strategy
 
         # Lock for thread-safe access
-        self._lock = MPLock(f"tensoripc_{self._pool_metadata.name}", create=True)
+        self._lock = PoolFrameLocks(
+            f"/tensoripc_{self._pool_metadata.name}",
+            self._pool_metadata.history_len
+        )
 
         # Storage for the single tensor pool with shape (history, *sample_shape)
         self._tensor_pool: Optional[Any] = None
@@ -61,7 +82,7 @@ class TensorProducerBackend(ABC):
         self._current_frame_index = (self._current_frame_index + 1) % self._pool_metadata.history_len
 
         # Write data to the current slot
-        with self._lock.write_lock():
+        with self._lock.write_frame(self._current_frame_index):
             self._write_data(data, self._current_frame_index)
             # Pad history if strategy is "fill"
             if not self._history_initialized and self._history_pad_strategy == "fill":
@@ -96,12 +117,16 @@ class TensorProducerBackend(ABC):
 
 class TensorConsumerBackend(ABC):
     """Base class for tensor consumer backends that receive DDS notifications."""
-    
+    mixin = TensorBackendMixin
+
     def __init__(self,
         metadata: PoolMetadata, 
     ):
         self._pool_metadata = metadata
-        self._lock = MPLock(f"tensoripc_{self._pool_metadata.name}", create=False)
+        self._lock = PoolFrameLocks(
+            f"/tensoripc_{self._pool_metadata.name}",
+            self._pool_metadata.history_len
+        )
 
         # Storage for the single tensor pool with shape (history, *sample_shape)
         self._tensor_pool: Optional[Any] = None
@@ -131,15 +156,16 @@ class TensorConsumerBackend(ABC):
         - Convert to NumPy array if as_numpy is True.
         """
         if not self._connected:
+            print("Consumer is not connected to the tensor pool")
             return None
         try:
-            with self._lock.read_lock():
+            with self._lock.read_frames(indices):
                 data = self._read_indices(indices)
         except Exception as e:
-            # print(f"Error reading indices {indices}: {e}")
+            print("Error reading indices {indices}:", e)
             return None
         if as_numpy:
-           return self.to_numpy(data)
+           return self.mixin.to_numpy(data)
         return data
     
     @abstractmethod
@@ -147,18 +173,6 @@ class TensorConsumerBackend(ABC):
         """Read data from the tensor pool at specified indices."""
         # This method should be implemented by subclasses to handle specific read logic
         raise NotImplementedError("Subclasses must implement _read_indices method")
-
-    @abstractmethod
-    def to_numpy(self, data):
-        """Convert data to NumPy array if necessary."""
-        # This method should be implemented by subclasses to handle specific conversion logic
-        raise NotImplementedError("Subclasses must implement _to_numpy method")
-    
-    @abstractmethod
-    def from_numpy(self, data):
-        """Convert NumPy array to backend-specific tensor."""
-        # This method should be implemented by subclasses to handle specific conversion logic
-        raise NotImplementedError("Subclasses must implement from_numpy method")
     
     def update_frame_index(self, latest_index: int) -> None:
         """

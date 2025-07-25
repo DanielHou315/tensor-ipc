@@ -12,6 +12,7 @@ import posix_ipc
 from .base_backend import (
     TensorProducerBackend,
     TensorConsumerBackend,
+    TensorBackendMixin, 
     HistoryPadStrategy
 )
 from ..core.metadata import PoolMetadata
@@ -28,6 +29,21 @@ NUMPY_TYPE_MAP = {
     "bool": np.bool_,
 }
 
+class NumpyBackendMixin(TensorBackendMixin):
+    @classmethod
+    def to_numpy(cls, data):
+        """Convert data to NumPy array if necessary."""
+        if isinstance(data, np.ndarray):
+            return data
+        return np.array(data)
+
+    @classmethod
+    def from_numpy(cls, data):
+        """Convert NumPy array to backend-specific tensor."""
+        if isinstance(data, np.ndarray):
+            return data
+        return np.array(data)
+
 class NumpyProducerBackend(TensorProducerBackend):
     """
     Native NumPy backend with single tensor pool and history padding
@@ -37,6 +53,7 @@ class NumpyProducerBackend(TensorProducerBackend):
         history_pad_strategy: Strategy for padding history ("zero" or "fill")
         force: If True, force re-creation of shared memory even if it already exists
     """
+    mixin = NumpyBackendMixin
     def __init__(self, 
         pool_metadata: PoolMetadata,
         history_pad_strategy: HistoryPadStrategy = "zero",
@@ -153,6 +170,7 @@ class NumpyConsumerBackend(TensorConsumerBackend):
     args:
         pool_metadata: PoolMetadata containing shared memory metadata
     """
+    mixin = NumpyBackendMixin
     def __init__(self,
         pool_metadata: PoolMetadata,
     ):
@@ -164,7 +182,7 @@ class NumpyConsumerBackend(TensorConsumerBackend):
         """Connect to existing NumPy tensor pool."""
         # Consumer connects to existing shared memory
         if self._connected:
-            print("Already connected to tensor pool")
+            # print("Already connected to tensor pool")
             return True
         
         self._metadata = pool_metadata
@@ -199,19 +217,6 @@ class NumpyConsumerBackend(TensorConsumerBackend):
         tensor_slice = self._tensor_pool[indices]
         tensor_slice.flags.writeable = False  # Ensure read-only access
         return tensor_slice
-
-    def to_numpy(self, data):
-        """Convert data to NumPy array if necessary."""
-        # Data is already numpy array
-        if isinstance(data, np.ndarray):
-            return data
-        raise TypeError(f"Expected numpy.ndarray, got {type(data)}")
-    
-    def from_numpy(self, data: np.ndarray) -> Any:
-        """Convert NumPy array to backend-specific tensor."""
-        if not isinstance(data, np.ndarray):
-            raise TypeError(f"Expected numpy.ndarray, got {type(data)}")
-        return data
 
     def cleanup(self) -> None:
         """

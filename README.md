@@ -1,129 +1,232 @@
-# Victor-Python-IPC
+# Tensor IPC
 
-Efficient, flexible, and high-performance inter-process communication (IPC) for robotics applications, with seamless integration between shared memory and ROS.
+High-performance inter-process communication for tensor data with seamless ROS integration.
 
 ## Overview
 
-`Victor-Python-IPC` is a library designed to provide a high-performance communication layer for robotics systems. It enables zero-copy shared memory (SHM) communication for processes running on the same machine and integrates transparently with ROS for distributed network communication.
-
-The core philosophy is to abstract the transport layer, allowing developers to work with `numpy` arrays and `torch` tensors directly, whether the data is coming from a local process or a remote ROS node.
+`tensor-ipc` provides efficient shared memory communication for tensor data between processes, with built-in support for ROS topics. It enables zero-copy data sharing using POSIX shared memory and integrates with ROS for distributed communication.
 
 ## Key Features
 
-- 🚀 **High-Performance SHM**: Zero-copy data sharing between processes using POSIX shared memory for maximum efficiency.
-- 🤖 **Seamless ROS Integration**: A built-in ROS bridge allows streams to subscribe to ROS topics and make the data available locally as if it were produced in shared memory.
-- 🧠 **Unified Tensor API**: Work with `numpy.ndarray` and `torch.Tensor` directly, regardless of the data source.
-- ⚙️ **Producer/Stream Model**: A simple and powerful producer/consumer pattern (`TensorProducer`/`TensorStream`).
-- 📦 **Multi-Process Registry**: A robust, file-system-backed registry allows processes to discover data pools by name.
-- 🛡️ **Type and Shape Safety**: Automatically validates data schemas to prevent mismatches between processes.
+- 🚀 **Zero-Copy Shared Memory**: POSIX shared memory with per-frame locking for safe concurrent access
+- 🤖 **ROS Integration**: Built-in ROS producers and consumers with automatic type conversion
+- 🧠 **Multi-Backend Support**: Native support for NumPy arrays and PyTorch tensors (CPU/CUDA)
+- 📦 **DDS Notifications**: Real-time notifications using CycloneDDS for efficient polling
+- 🛡️ **Type Safety**: Automatic validation of tensor shapes, dtypes, and devices
+- 🔄 **History Management**: Configurable history buffers with circular indexing
 
 ## Installation
 
 ```bash
-git clone https://github.com/UM-ARM-Lab/Victor-Python-IPC.git
-cd Victor-Python-IPC
+git clone https://github.com/your-org/tensor-ipc.git
+cd tensor-ipc
 pip install -e .
 ```
 
-For development, which includes testing dependencies:
+For ROS support:
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[ros]"
 ```
 
 ## Quick Start
 
-The library revolves around two core classes: `TensorProducer` to create and publish data, and `TensorStream` to subscribe to it.
+### 1. Basic Shared Memory Communication
 
-### 1. Local Shared Memory Communication
-
-This is the most performant mode for processes running on the same machine.
-
-**Producer Process:**
+**Producer:**
 ```python
 import numpy as np
 import time
-from polymorph_ipc import TensorProducer
+from tensor_ipc.core.producer import TensorProducer
 
-# 1. Create a producer for a pool named 'my_numpy_pool'
-# The pool's shape, dtype, and history length are defined by the sample array.
+# Create producer from sample data
 producer = TensorProducer.from_sample(
-    pool_name="my_numpy_pool",
+    pool_name="camera_feed",
     sample=np.zeros((480, 640, 3), dtype=np.uint8),
     history_len=10
 )
 
-# 2. Publish data
+# Publish data
 for i in range(100):
-    # Create a new numpy array with updated data
     image_data = np.random.randint(0, 256, (480, 640, 3), dtype=np.uint8)
-    producer.publish(image_data)
-    print(f"Published frame {i}")
+    frame_idx = producer.put(image_data)
+    print(f"Published frame {frame_idx}")
     time.sleep(0.1)
 
-# 3. Clean up resources
 producer.cleanup()
 ```
 
-**Consumer Process:**
+**Consumer:**
 ```python
-import time
-from polymorph_ipc import TensorStream
+from tensor_ipc.core.consumer import TensorConsumer
+from tensor_ipc.core.metadata import MetadataCreator
+import numpy as np
 
-# 1. Create a stream to subscribe to the pool
-# It will automatically find the pool registered by the producer.
-stream = TensorStream(pool_name="my_numpy_pool")
+# Create consumer with expected metadata
+sample = np.zeros((480, 640, 3), dtype=np.uint8)
+metadata = MetadataCreator.from_numpy_sample("camera_feed", sample, history_len=10)
+consumer = TensorConsumer(metadata)
 
-# 2. Get data
-# Get the most recently published tensor (non-blocking)
-latest_image = stream.get_last()
-if latest_image is not None:
-    print(f"Got last image with shape: {latest_image.shape}")
+# Get latest frame
+latest_frame = consumer.get(history_len=1, as_numpy=True)
+if latest_frame is not None:
+    print(f"Received frame with shape: {latest_frame.shape}")
 
-# Wait for the next new tensor to be published (blocking)
-print("Waiting for new image...")
-new_image = stream.get_new(timeout=1.0)
-if new_image is not None:
-    print(f"Got new image with shape: {new_image.shape}")
+# Get multiple frames with history
+history = consumer.get(history_len=5, latest_first=True)
+if history is not None:
+    print(f"Received {len(history)} frames")
 
-# 3. Clean up resources
-stream.cleanup()
+consumer.cleanup()
 ```
 
-### 2. Subscribing to a ROS Topic
+### 2. PyTorch Support
 
-The `TensorStream` can directly subscribe to a ROS topic. It handles the conversion and creates a local shared memory pool, allowing other local processes to access the ROS data with zero-copy reads.
+```python
+import torch
+from tensor_ipc.core.producer import TensorProducer
+from tensor_ipc.core.consumer import TensorConsumer
 
+# Producer with PyTorch tensors
+sample_tensor = torch.zeros(3, 224, 224, dtype=torch.float32)
+producer = TensorProducer.from_sample("torch_pool", sample_tensor)
+
+# Publish tensor data
+data = torch.randn(3, 224, 224, dtype=torch.float32)
+producer.put(data)
+
+# Consumer automatically handles PyTorch tensors
+from tensor_ipc.core.metadata import MetadataCreator
+metadata = MetadataCreator.from_torch_sample("torch_pool", sample_tensor)
+consumer = TensorConsumer(metadata)
+
+result = consumer.get(as_numpy=False)  # Returns PyTorch tensor
+```
+
+### 3. ROS Integration
+
+**ROS to Shared Memory Bridge:**
 ```python
 import rclpy
-import numpy as np
+from rclpy.node import Node
 from sensor_msgs.msg import Image
-from polymorph_ipc import TensorStream
+import numpy as np
+from tensor_ipc.rosext import ROSTensorConsumer
+from tensor_ipc.core.metadata import MetadataCreator
 
-# Standard ROS setup
 rclpy.init()
-node = rclpy.create_node('my_ros_subscriber')
+node = Node('tensor_bridge')
 
-# 1. Create a stream that bridges a ROS topic to a local SHM pool
-# Provide ROS details and a sample tensor to define the pool's structure.
-ros_stream = TensorStream(
-    pool_name="camera_stream_from_ros",
-    ros_node=node,
+# Create metadata for expected image format
+sample_image = np.zeros((480, 640, 3), dtype=np.uint8)
+metadata = MetadataCreator.from_numpy_sample("ros_camera", sample_image)
+
+# Bridge ROS topic to shared memory
+ros_consumer = ROSTensorConsumer(
+    pool_metadata=metadata,
+    node=node,
     ros_topic="/camera/image_raw",
     ros_msg_type=Image,
-    ros_sample_data=np.zeros((480, 640, 3), dtype=np.uint8)
+    on_new_data_callback=lambda data: print(f"New image: {data.shape}")
 )
 
-print("Subscribed to ROS topic. Spinning...")
-# The stream handles the subscription and data conversion in the background.
-# We just need to spin the ROS node.
 rclpy.spin(node)
-
-# 2. In another local process, you can now access this data via SHM:
-# local_stream = TensorStream(pool_name="camera_stream_from_ros")
-# image = local_stream.get_last()
-
-# 3. Clean up
-ros_stream.cleanup()
-node.destroy_node()
-rclpy.shutdown()
 ```
+
+**Shared Memory to ROS Bridge:**
+```python
+from tensor_ipc.rosext import ROSTensorProducer
+from sensor_msgs.msg import Image
+
+# Publish shared memory data to ROS
+ros_producer = ROSTensorProducer(
+    pool_metadata=metadata,
+    node=node,
+    ros_topic="/processed_images",
+    ros_msg_type=Image
+)
+
+# Data from shared memory gets published to ROS
+data = np.random.randint(0, 256, (480, 640, 3), dtype=np.uint8)
+ros_producer.put(data)
+```
+
+## Advanced Features
+
+### CUDA Support
+
+```python
+import torch
+from tensor_ipc.core.producer import TensorProducer
+
+# CUDA tensors with IPC sharing
+if torch.cuda.is_available():
+    cuda_tensor = torch.zeros(3, 224, 224, device='cuda:0')
+    producer = TensorProducer.from_sample("cuda_pool", cuda_tensor)
+    
+    # Publish CUDA tensor directly
+    gpu_data = torch.randn(3, 224, 224, device='cuda:0')
+    producer.put(gpu_data)
+```
+
+### Callbacks and Notifications
+
+```python
+def on_new_data(data):
+    print(f"Callback triggered with data shape: {data.shape}")
+
+consumer = TensorConsumer(
+    metadata,
+    on_new_data_callback=on_new_data
+)
+
+# Callback will be triggered when new data arrives
+```
+
+### History Management
+
+```python
+# Get last 5 frames in chronological order
+history = consumer.get(history_len=5, latest_first=False)
+
+# Get last 3 frames with latest first
+recent = consumer.get(history_len=3, latest_first=True)
+```
+
+## Architecture
+
+- **Backends**: Pluggable backends for NumPy, PyTorch CPU, and PyTorch CUDA
+- **Shared Memory**: POSIX shared memory with memory-mapped arrays
+- **Locking**: Per-frame reader-writer locks for safe concurrent access
+- **Notifications**: CycloneDDS for real-time progress updates
+- **ROS Bridge**: Automatic conversion between ROS messages and tensor data
+
+## API Reference
+
+### Core Classes
+
+- `TensorProducer`: Creates and publishes to shared memory pools
+- `TensorConsumer`: Subscribes to and reads from shared memory pools
+- `PoolMetadata`: Describes pool structure and properties
+
+### ROS Extensions
+
+- `ROSTensorProducer`: Publishes shared memory data to ROS topics
+- `ROSTensorConsumer`: Subscribes to ROS topics and creates shared memory pools
+
+### Metadata Creation
+
+- `MetadataCreator.from_numpy_sample()`: Create metadata from NumPy arrays
+- `MetadataCreator.from_torch_sample()`: Create metadata from PyTorch tensors
+- `MetadataCreator.from_torch_cuda_sample()`: Create metadata for CUDA tensors
+
+## Requirements
+
+- Python 3.8+
+- NumPy
+- CycloneDX (for DDS notifications)
+- Optional: PyTorch (for tensor support)
+- Optional: ROS 2 + ros2_numpy (for ROS integration)
+
+## License
+
+MIT License

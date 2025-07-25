@@ -69,9 +69,11 @@ class TensorProducer:
             keep_last=keep_last
         )
 
-    def put(self, data: Any) -> int:
+    def put(self, data: Any, *args, **kwargs) -> int:
         """
         Write data to the tensor pool and return the current frame index.
+
+        args and kwargs: not used but to be consistent with ros producer
         """
         # Validate data matches expected shape and type
         if not detect_backend_from_data(data) == self._pool_metadata.backend_type:

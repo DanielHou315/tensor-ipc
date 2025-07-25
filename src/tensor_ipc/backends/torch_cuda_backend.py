@@ -88,8 +88,7 @@ class TorchCUDAConsumerBackend(TorchConsumerBackend):
         
         if not isinstance(pool_metadata, PoolMetadata) or \
             not MetadataCreator.verify_torch_cuda_payload(pool_metadata):
-            print("Invalid pool metadata for CUDA backend")
-            print(pool_metadata)
+            print("Invalid pool metadata for CUDA backend:", pool_metadata)
             return False
         # Cache used values
         self._target_device = torch.device(self._pool_metadata.device)
@@ -126,7 +125,7 @@ class TorchCUDAConsumerBackend(TorchConsumerBackend):
             self._connected = True
             return True
         except Exception as e:
-            # print(f"Failed to connect to CUDA tensor pool: {e}")
+            print(f"Failed to connect to CUDA tensor pool with error: {e}")
             return False
 
     # ---------- cleanup -------------------------------------------

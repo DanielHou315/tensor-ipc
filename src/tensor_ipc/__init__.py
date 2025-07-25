@@ -12,11 +12,28 @@ __author__ = "Daniel Hou"
 __email__ = "houhd@umich.edu"
 
 # Core shared memory classes
-# from .core.consumer import TensorConsumer
-# from .core.producer import TensorProducer
+from .core.consumer import TensorConsumer
+from .core.producer import TensorProducer
+
 from .core.metadata import (
     PoolMetadata,
     MetadataCreator
 )
 
+__all__ = [
+    "TensorConsumer",
+    "TensorProducer",
+    "PoolMetadata",
+    "MetadataCreator"
+]
+
 from .rosext import ROS_AVAILABLE
+if ROS_AVAILABLE:
+    from .rosext import (
+        ROSTensorProducer,
+        ROSTensorConsumer
+    )
+    __all__.extend([
+        "ROSTensorProducer",
+        "ROSTensorConsumer"
+    ])

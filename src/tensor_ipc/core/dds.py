@@ -142,15 +142,16 @@ class DDSConsumer:
         try:
             metadata = self._metadata_reader.take_next()
             if metadata is None:
-                print(f"No metadata available for topic '{self._topic_name}'")
+                # print(f"No metadata available for topic '{self._topic_name}'")
                 return False
             self._metadata = metadata
             self._connected = True
         except Exception as e:
-            import traceback
-            print("Error connecting to DDS with error:")
-            traceback.print_exc()          # full stack trace
-            exit(1)
+            # import traceback
+            # print("Error connecting to DDS with error:")
+            # traceback.print_exc()          # full stack trace
+            # exit(1)
+            return False
         return self._connected
 
     def read_next_progress(self, timeout=20):

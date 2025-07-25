@@ -1,32 +1,30 @@
 # Tensor IPC
 
-High-performance inter-process communication for tensor data with seamless ROS integration.
+High-performance and Flexible IPC for tensor data with seamless ROS integration for robotics research.
 
 ## Overview
 
-`tensor-ipc` provides efficient shared memory communication for tensor data between processes, with built-in support for ROS topics. It enables zero-copy data sharing using POSIX shared memory and integrates with ROS for distributed communication.
+`tensor-ipc` provides efficient shared memory communication for tensor data between processes, with built-in support for ROS topics. It enables zero-copy data sharing using POSIX shared memory and integrates with ROS for distributed communication and sim/real transfer.
 
 ## Key Features
 
 - 🚀 **Zero-Copy Shared Memory**: POSIX shared memory with per-frame locking for safe concurrent access
-- 🤖 **ROS Integration**: Built-in ROS producers and consumers with automatic type conversion
+- 🤖 **ROS Integration**: Built-in ROS producers and consumers with automatic type conversion (custom types are supported through ros2_numpy)
 - 🧠 **Multi-Backend Support**: Native support for NumPy arrays and PyTorch tensors (CPU/CUDA)
-- 📦 **DDS Notifications**: Real-time notifications using CycloneDDS for efficient polling
+- 📦 **DDS Notifications**: Real-time notifications and synchronization using CycloneDDS for efficient polling
 - 🛡️ **Type Safety**: Automatic validation of tensor shapes, dtypes, and devices
 - 🔄 **History Management**: Configurable history buffers with circular indexing
 
 ## Installation
 
 ```bash
-git clone https://github.com/your-org/tensor-ipc.git
+git clone https://github.com/danielhou315/tensor-ipc.git
 cd tensor-ipc
 pip install -e .
 ```
-
-For ROS support:
-```bash
-pip install -e ".[ros]"
-```
+- For torch/torch CUDA support, you must install `torch` in the same Python environment. 
+- For ROS support, you must install [ros2_numpy](https://github.com/Box-Robotics/ros2_numpy) in the same Python environment.
+- Otherwise, only `numpy` backend will be available. 
 
 ## Quick Start
 
@@ -195,7 +193,7 @@ recent = consumer.get(history_len=3, latest_first=True)
 ## Architecture
 
 - **Backends**: Pluggable backends for NumPy, PyTorch CPU, and PyTorch CUDA
-- **Shared Memory**: POSIX shared memory with memory-mapped arrays
+- **Shared Memory**: Numpy/PyTorch backend uses POSIX shared memory with memory-mapped arrays. Torch CUDA backend uses CUDA API through PyTorch. 
 - **Locking**: Per-frame reader-writer locks for safe concurrent access
 - **Notifications**: CycloneDDS for real-time progress updates
 - **ROS Bridge**: Automatic conversion between ROS messages and tensor data
@@ -218,12 +216,13 @@ recent = consumer.get(history_len=3, latest_first=True)
 - `MetadataCreator.from_numpy_sample()`: Create metadata from NumPy arrays
 - `MetadataCreator.from_torch_sample()`: Create metadata from PyTorch tensors
 - `MetadataCreator.from_torch_cuda_sample()`: Create metadata for CUDA tensors
+- `MetadataCreator.from_sample()`: Unifies creation of metadata from sample
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.7+
 - NumPy
-- CycloneDX (for DDS notifications)
+- CycloneDDS (for DDS notifications)
 - Optional: PyTorch (for tensor support)
 - Optional: ROS 2 + ros2_numpy (for ROS integration)
 

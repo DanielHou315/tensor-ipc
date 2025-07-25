@@ -45,3 +45,7 @@ class ROSTensorProducer:
         data = self.tensor_producer.backend.mixin.to_numpy(data)
         msg = ros2_numpy.msgify(self.ros_msg_type, data, *args, **kwargs)
         self._pub.publish(msg)
+
+    def cleanup(self) -> None:
+        self.tensor_producer.cleanup()
+        self.node.destroy_publisher(self._pub)

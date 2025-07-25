@@ -1,5 +1,7 @@
 from __future__ import annotations
-from typing import Any
+from typing import Any, Optional
+
+from sympy import Domain
 
 from ..backends import (
     create_producer_backend,
@@ -10,6 +12,7 @@ from .metadata import (
     PoolProgressMessage,
     MetadataCreator
 )
+from cyclonedds.domain import DomainParticipant
 from .dds import (
     DDSProducer,
     is_topic_published
@@ -19,7 +22,7 @@ class TensorProducer:
     """Client for writing tensors to a shared pool with notification support."""
     def __init__(self, 
         pool_metadata: PoolMetadata,
-        dds_participant:Any = None,  # Optional DDS participant for notifications
+        dds_participant: Optional[DomainParticipant] = None,  # Optional DDS participant for notifications
         keep_last: int = 10
     ):
         # Ensure unique pub
@@ -51,7 +54,7 @@ class TensorProducer:
         pool_name: str,
         sample: Any,
         history_len: int = 1,
-        dds_participant: Any = None,
+        dds_participant: Optional[DomainParticipant] = None,
         keep_last: int = 10
     ) -> "TensorProducer":
         """Create a producer and its underlying pool from a sample tensor."""

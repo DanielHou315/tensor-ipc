@@ -23,7 +23,7 @@ class TensorConsumer:
     def __init__(self, 
         pool_metadata: PoolMetadata,
         keep_last: int = 10,
-        dds_participant: DomainParticipant|None = None,
+        dds_participant: Optional[DomainParticipant] = None,
         on_new_data_callback = None
     ):
         """Initialize consumer with user-specified parameters (pool may not exist yet)."""
@@ -61,7 +61,7 @@ class TensorConsumer:
     def from_sample(cls, 
         pool_name: str, 
         sample: Any, 
-        dds_participant: DomainParticipant,
+        dds_participant: Optional[DomainParticipant] = None,
         history_len: int = 1,
         keep_last: int = 10,
         callback: Optional[Callable[[Any], None]] = None

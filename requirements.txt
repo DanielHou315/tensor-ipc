@@ -1,0 +1,9 @@
+# Core dependencies for tensor-ipc
+numpy>=1.21.0
+cyclonedds==0.10.5
+posix-ipc>=1.0.0
+
+# Optional dependencies (install separately if needed):
+# torch>=1.10.0  # For PyTorch backend support
+# ros2-numpy     # For ROS integration  
+# rclpy          # For ROS integration

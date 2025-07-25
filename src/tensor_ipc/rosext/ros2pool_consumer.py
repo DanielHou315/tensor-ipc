@@ -65,3 +65,9 @@ class ROSTensorConsumer:
             as_numpy=as_numpy,
             latest_first=latest_first
         )
+    
+    def cleanup(self) -> None:
+        """Cleanup resources."""
+        self.tensor_producer.cleanup()
+        self.tensor_consumer.cleanup()
+        self.node.destroy_subscription(self._sub)

@@ -59,6 +59,13 @@ class ROSTensorConsumer:
     ): 
         """
         Get tensor data from the pool, which just wraps around the TensorConsumer's get method.
+
+        Args:
+            history_len: Number of frames to retrieve.
+            as_numpy: If True, return data as numpy arrays.
+            latest_first: If True, return the latest frames first.
+        Returns:
+            Optional[Any]: The latest tensor data from the pool, or None if not available.
         """
         return self.tensor_consumer.get(
             history_len=history_len,

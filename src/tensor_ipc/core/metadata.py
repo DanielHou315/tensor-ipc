@@ -133,7 +133,16 @@ class MetadataCreator:
     """
     @staticmethod
     def from_numpy_sample(name: str, sample_data, history_len: int = 1) -> 'PoolMetadata':
-        """Create PoolMetadata from a sample tensor/array."""
+        """
+        Create PoolMetadata from a sample numpy array.
+        
+        Args:
+            name: Name of the shared memory pool.
+            sample_data: Sample tensor or array to infer metadata.
+            history_len: Number of frames to keep in the pool.
+        Returns:
+            PoolMetadata: Metadata for the shared memory pool.
+        """
         import numpy as np
 
         if not isinstance(sample_data, np.ndarray):
@@ -159,7 +168,16 @@ class MetadataCreator:
 
     @staticmethod
     def from_torch_sample(name: str, sample_data, history_len: int = 1) -> 'PoolMetadata':
-        """Create PoolMetadata from a sample tensor/array."""
+        """
+        Create PoolMetadata from a sample torch tensor.
+
+        Args:
+            name: Name of the shared memory pool.
+            sample_data: Sample tensor or array to infer metadata.
+            history_len: Number of frames to keep in the pool.
+        Returns:
+            PoolMetadata: Metadata for the shared memory pool.
+        """
         import torch
         import os
 
@@ -196,7 +214,17 @@ class MetadataCreator:
         history_len: int = 1,
         tensor_pool = None,
     ) -> 'PoolMetadata':
-        """Create PoolMetadata from a sample CUDA tensor."""
+        """
+        Create PoolMetadata from a sample CUDA tensor
+        
+        Args:
+            name: Name of the shared memory pool.
+            sample_data: Sample tensor or array to infer metadata.
+            history_len: Number of frames to keep in the pool.
+            tensor_pool: Optional existing tensor pool to use for metadata. Usually this is None. 
+        Returns:
+            PoolMetadata: Metadata for the shared memory pool.
+        """
         import torch
         import os
         
@@ -246,6 +274,17 @@ class MetadataCreator:
 
     @classmethod
     def from_sample(cls, name, data, history_len, backend):
+        """
+        Create PoolMetadata from a sample tensor/array.
+        
+        Args:
+            name: Name of the shared memory pool.
+            sample_data: Sample tensor or array to infer metadata.
+            history_len: Number of frames to keep in the pool.
+            backend: Backend type ('numpy', 'torch', 'torch_cuda').
+        Returns:
+            PoolMetadata: Metadata for the shared memory pool.
+        """
         if backend == "numpy":
             return cls.from_numpy_sample(
                 name=name,

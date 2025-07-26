@@ -23,10 +23,17 @@ class TensorConsumer:
     def __init__(self, 
         pool_metadata: PoolMetadata,
         keep_last: int = 10,
-        dds_participant: Optional[DomainParticipant] = None,
+        dds_participant: Optional[DomainParticipant] = None, 
         on_new_data_callback = None
     ):
-        """Initialize consumer with user-specified parameters (pool may not exist yet)."""
+        """
+        Initialize TensorConsumer
+        Args:
+            pool_metadata: Metadata for the shared memory pool.
+            keep_last: Number of latest frames to keep in DDS history.
+            dds_participant: Optional DDS participant for notifications.
+            on_new_data_callback: Optional callback to call when new data is available.
+        """
         # Store user-specified parameters for backend creation
         self._pool_metadata = pool_metadata
 
@@ -66,7 +73,17 @@ class TensorConsumer:
         keep_last: int = 10,
         callback: Optional[Callable[[Any], None]] = None
     ) -> "TensorConsumer":
-        """Create a consumer from a sample tensor/array to infer metadata."""
+        """
+        Create a consumer from a sample tensor/array to infer metadata.
+        
+        Args:
+            pool_name: Name of the shared memory pool.
+            sample: Sample tensor or array to infer metadata.
+            dds_participant: Optional DDS participant for notifications.
+            history_len: Number of frames to keep in the pool.
+            keep_last: Number of latest frames to keep in DDS history.
+            callback: Optional callback to call when new data is available.
+        """
         # Detect backend type from sample
         backend_type = detect_backend_from_data(sample)
         pool_metadata = MetadataCreator.from_sample(
@@ -102,19 +119,15 @@ class TensorConsumer:
         if not self._connected:
             connect_status = self._connect()
             if not connect_status:
-                # print(f"Failed to connect to tensor pool: {self._pool_metadata.name}")
                 return None
-        # print("Already connected to tensor pool:", self._pool_metadata.name)
-
+            
         # Read latest data from backend
         indices = np.arange(
             self.backend.current_latest_index, 
             self.backend.current_latest_index - history_len, -1
         ) % self.backend.max_history_len
-        # print(f"Reading indices: {indices} from pool {self._pool_metadata.name}")
         data = self.backend.read(indices, as_numpy=as_numpy)
         if data is None:
-            # print("No data available in tensor pool:", self._pool_metadata.name)
             return None
         
         # reverse data if latest_first is False
@@ -148,11 +161,8 @@ class TensorConsumer:
                 ]
         
         # Still update since IPC handle may be different for CUDA
-        # print("Connecting pool with valid metadata")
-        # print("Attempting to connect with", self.backend, self._connected)
         self._pool_metadata = recv_pool_metadata
         res = self.backend.connect(self._pool_metadata)
-        # print("Connected backend:", self.backend, "Result:", res)
         if res is False:
             if _debug:
                 print(f"Failed to connect backend for pool '{self._pool_metadata.name}'")
@@ -169,14 +179,10 @@ class TensorConsumer:
             self._connect()
             if not self._connected:
                 return
-            # print("Connection established to tensor pool:", self._pool_metadata.name)
-
-        # print("New data available in tensor pool:", self._pool_metadata.name)
-
+            
         # Update latest index
         with self._update_latest_index_lock:
             self.backend.update_frame_index(data_reader.take_one().latest_frame)
-            # print(f"Latest index updated to {self.backend.current_latest_index}")
         
         # Call user callback if registered
         if callable(self._on_new_data_callback):
@@ -191,7 +197,6 @@ class TensorConsumer:
         """Handle connection loss notification from DDS."""
         if not self._connected:
             return
-        # print(f"Connection to tensor pool '{self._pool_metadata.name}' lost.")
         with self._connection_lock:
             self.backend.cleanup()
             self._connected = False

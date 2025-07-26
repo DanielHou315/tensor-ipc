@@ -35,13 +35,14 @@ class ROSTensorProducer:
             dds_participant=dds_participant  # ROS does not use DDS directly
         )
 
-    def connect_tensor_pool(self, pool_metadata) -> None:
-        """Connect to the ROS topic and initialize it."""
-        # Implement ROS-specific connection logic here
-        self._connected = True  # Set to True after successful connection
-
     def put(self, data, *args, **kwargs) -> None:
-        # Convert the data to a ROS message
+        """
+        Publish tensor data to the ROS topic AND update the tensor pool.
+
+        Args:
+            data (np.array | torch.Tensor): The tensor data to publish.
+        """
+        self.tensor_producer.put(data)
         data = self.tensor_producer.backend.mixin.to_numpy(data)
         msg = ros2_numpy.msgify(self.ros_msg_type, data, *args, **kwargs)
         self._pub.publish(msg)
